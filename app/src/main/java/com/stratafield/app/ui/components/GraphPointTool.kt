@@ -3,6 +3,7 @@ package com.stratafield.app.ui.components
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
@@ -59,10 +60,7 @@ data class GraphPaperData(
 data class GraphInkPoint(val x: Float, val y: Float)
 data class GraphInkStroke(val points: List<GraphInkPoint>, val color: Long, val width: Float = 3f)
 
-private sealed class GraphAction {
-    data class PointAdded(val id: String) : GraphAction()
-    data class ConnectionAdded(val id: String) : GraphAction()
-}
+private data class GraphSnapshot(val points: List<GraphPoint>, val connections: List<GraphConnection>, val inkStrokes: List<GraphInkStroke>)
 
 private const val GRID_DP = 28f
 private const val HIT_RADIUS_PX = 45f
@@ -71,6 +69,7 @@ private const val HIT_RADIUS_PX = 45f
 fun GraphPointTool(
     modifier: Modifier = Modifier,
     initialData: GraphPaperData = GraphPaperData(),
+    onClose: () -> Unit = {},
     onDataChange: (GraphPaperData) -> Unit = {}
 ) {
     var scaleRatioText by remember { mutableStateOf(if (initialData.scaleRatio == 1f) "1" else initialData.scaleRatio.toString()) }
@@ -79,12 +78,12 @@ fun GraphPointTool(
     var connections by remember { mutableStateOf(initialData.connections) }
     var inkStrokes by remember { mutableStateOf(initialData.inkStrokes.orEmpty()) }
     var currentInkPoints by remember { mutableStateOf<List<GraphInkPoint>>(emptyList()) }
-    var drawMode by remember { mutableStateOf(false) }
     var eraserMode by remember { mutableStateOf(false) }
     var inkColor by remember { mutableStateOf(NothingBlack) }
     var xInput by remember { mutableStateOf("") }
     var yInput by remember { mutableStateOf("") }
-    val history = remember { mutableStateListOf<GraphAction>() }
+    val history = remember { mutableStateListOf<GraphSnapshot>() }
+    val redoHistory = remember { mutableStateListOf<GraphSnapshot>() }
 
     var connectMode by remember { mutableStateOf(false) }
     var pointEditMode by remember { mutableStateOf(false) }
@@ -94,9 +93,9 @@ fun GraphPointTool(
     var dragPreviewCurrent by remember { mutableStateOf<Offset?>(null) }
     var dragPreviewCurve by remember { mutableStateOf(Offset.Zero) }
 
-    var showScaleDialog by remember { mutableStateOf(false) }
     var showUnitDialog by remember { mutableStateOf(false) }
     var showColorDialog by remember { mutableStateOf(false) }
+    var eyedropperMode by remember { mutableStateOf(false) }
     var customColorHex by remember { mutableStateOf("#FF2457") }
 
     var zoom by remember { mutableStateOf(1f) }
@@ -107,6 +106,21 @@ fun GraphPointTool(
         onDataChange(GraphPaperData(ratio, squareUnit, points, connections, inkStrokes))
     }
 
+    fun snapshot() = GraphSnapshot(points.toList(), connections.toList(), inkStrokes.toList())
+    fun recordUndo() { history.add(snapshot()); redoHistory.clear() }
+    fun undo() {
+        val previous = history.removeLastOrNull() ?: return
+        redoHistory.add(snapshot())
+        points = previous.points; connections = previous.connections; inkStrokes = previous.inkStrokes
+        selectedPointId = null; pushData()
+    }
+    fun redo() {
+        val next = redoHistory.removeLastOrNull() ?: return
+        history.add(snapshot())
+        points = next.points; connections = next.connections; inkStrokes = next.inkStrokes
+        selectedPointId = null; pushData()
+    }
+
     val axisColor = MaterialTheme.colorScheme.onSurface
     val gridColor = MaterialTheme.colorScheme.outline
     val pointColor = MaterialTheme.colorScheme.primary
@@ -115,44 +129,31 @@ fun GraphPointTool(
     val eraserPreviewColor = MaterialTheme.colorScheme.error
 
     Column(modifier = modifier.fillMaxSize()) {
+        Row(Modifier.fillMaxWidth().height(44.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("Graph Paper", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+            IconButton(onClick = ::undo, enabled = history.isNotEmpty()) { Icon(Icons.Filled.Undo, contentDescription = "Undo") }
+            IconButton(onClick = ::redo, enabled = redoHistory.isNotEmpty()) { Icon(Icons.Filled.Redo, contentDescription = "Redo") }
+            Spacer(Modifier.weight(1f))
+            IconButton(onClick = onClose) { Icon(Icons.Filled.Close, contentDescription = "Close graph paper") }
+        }
         Surface(Modifier.fillMaxWidth().padding(bottom = 8.dp), color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(12.dp), tonalElevation = 2.dp) {
             Column(Modifier.padding(horizontal = 5.dp, vertical = 3.dp), verticalArrangement = Arrangement.spacedBy(0.dp)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                    RibbonToolButton(Icons.Filled.Edit, "Draw", true, Modifier.weight(1f), drawMode) { drawMode = !drawMode; eraserMode = false; connectMode = false; pointEditMode = false }
-                    RibbonToolButton(Icons.Filled.Backspace, "Eraser", true, Modifier.weight(1f), eraserMode) { eraserMode = !eraserMode; drawMode = false; connectMode = false; pointEditMode = false }
-                    RibbonToolButton(Icons.Filled.Add, "Point", true, Modifier.weight(1f)) { drawMode = false; eraserMode = false; connectMode = false; pointEditMode = false }
-                    RibbonToolButton(Icons.Filled.TouchApp, "Select", true, Modifier.weight(1f), pointEditMode) { pointEditMode = !pointEditMode; connectMode = false; drawMode = false; eraserMode = false }
-                }
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                    RibbonToolButton(Icons.Filled.Timeline, "Connect", true, Modifier.weight(1f), connectMode) { connectMode = !connectMode; pointEditMode = false; drawMode = false; eraserMode = false }
+                    RibbonToolButton(Icons.Filled.Backspace, "Eraser", true, Modifier.weight(1f), eraserMode) { eraserMode = !eraserMode; connectMode = false; pointEditMode = false }
+                    RibbonToolButton(Icons.Filled.TouchApp, "Select", true, Modifier.weight(1f), pointEditMode) { pointEditMode = !pointEditMode; connectMode = false; eraserMode = false }
+                    RibbonToolButton(Icons.Filled.Timeline, "Connect", true, Modifier.weight(1f), connectMode) { connectMode = !connectMode; pointEditMode = false; eraserMode = false }
                     RibbonToolButton(Icons.Filled.Palette, "Color", true, Modifier.weight(1f)) {
                         customColorHex = selectedPointId?.let { id -> points.firstOrNull { it.id == id }?.color?.takeIf { it != 0L }?.let { String.format("#%06X", 0xFFFFFF and Color(it.toULong()).toArgb()) } }
                             ?: String.format("#%06X", 0xFFFFFF and inkColor.toArgb())
                         showColorDialog = true
                     }
-                    RibbonToolButton(Icons.Filled.Delete, "Del point", selectedPointId != null, Modifier.weight(1f)) { selectedPointId?.let { id -> points = points.filterNot { it.id == id }; connections = connections.filterNot { it.fromId == id || it.toId == id }; selectedPointId = null; pushData() } }
-                    RibbonToolButton(Icons.Filled.RemoveRoad, "Del lines", connections.isNotEmpty(), Modifier.weight(1f)) { connections = emptyList(); pushData() }
+                    RibbonToolButton(Icons.Filled.Delete, "Del point", selectedPointId != null, Modifier.weight(1f)) { selectedPointId?.let { id -> recordUndo(); points = points.filterNot { it.id == id }; connections = connections.filterNot { it.fromId == id || it.toId == id }; selectedPointId = null; pushData() } }
+                    RibbonToolButton(Icons.Filled.RemoveRoad, "Del lines", connections.isNotEmpty(), Modifier.weight(1f)) { if (connections.isNotEmpty()) { recordUndo(); connections = emptyList(); pushData() } }
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                    RibbonToolButton(Icons.Filled.Undo, "Undo", history.isNotEmpty(), Modifier.weight(1f)) {
-                        val action = history.removeLastOrNull()
-                        if (action != null) {
-                            when (action) {
-                                is GraphAction.PointAdded -> { points = points.filterNot { it.id == action.id }; connections = connections.filterNot { it.fromId == action.id || it.toId == action.id } }
-                                is GraphAction.ConnectionAdded -> connections = connections.filterNot { it.id == action.id }
-                            }
-                            selectedPointId = null; pushData()
-                        }
-                    }
-                    RibbonToolButton(Icons.Filled.Tune, "Scale", true, Modifier.weight(1f)) { showScaleDialog = true }
                     RibbonToolButton(Icons.Filled.Straighten, "Units", true, Modifier.weight(1f)) { showUnitDialog = true }
-                    RibbonToolButton(Icons.Filled.ZoomOut, "Zoom −", true, Modifier.weight(1f)) { zoom = (zoom / 1.25f).coerceIn(0.12f, 12f) }
-                }
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                    RibbonToolButton(Icons.Filled.ZoomIn, "Zoom +", true, Modifier.weight(1f)) { zoom = (zoom * 1.25f).coerceIn(0.12f, 12f) }
                     RibbonToolButton(Icons.Filled.CenterFocusStrong, "Center", true, Modifier.weight(1f)) { zoom = 1f; panOffset = Offset.Zero }
-                    RibbonToolButton(Icons.Filled.ClearAll, "Clear", true, Modifier.weight(1f)) { points = emptyList(); connections = emptyList(); inkStrokes = emptyList(); history.clear(); selectedPointId = null; pushData() }
-                    Spacer(Modifier.weight(1f))
+                    repeat(4) { Spacer(Modifier.weight(1f)) }
                 }
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 Row(Modifier.fillMaxWidth().padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -162,7 +163,7 @@ fun GraphPointTool(
                         val x = xInput.toFloatOrNull(); val y = yInput.toFloatOrNull()
                         if (x != null && y != null) {
                             val point = GraphPoint(java.util.UUID.randomUUID().toString(), x, y)
-                            points = points + point; history.add(GraphAction.PointAdded(point.id)); selectedPointId = point.id
+                            recordUndo(); points = points + point; selectedPointId = point.id
                             pushData(); xInput = ""; yInput = ""
                         }
                     }, enabled = xInput.toFloatOrNull() != null && yInput.toFloatOrNull() != null, contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)) { Text("Add") }
@@ -180,15 +181,15 @@ fun GraphPointTool(
             Canvas(
                 modifier = Modifier
                     .fillMaxSize()
-                    .pointerInput(connectMode, pointEditMode, drawMode, eraserMode) {
-                        if (connectMode || pointEditMode || drawMode || eraserMode) return@pointerInput
+                    .pointerInput(connectMode, pointEditMode, eraserMode) {
+                        if (connectMode || pointEditMode || eraserMode) return@pointerInput
                         detectTransformGestures { _, pan, gestureZoom, _ ->
                             zoom = (zoom * gestureZoom).coerceIn(0.12f, 12f)
                             panOffset += pan
                         }
                     }
-                    .pointerInput(connectMode, pointEditMode, drawMode, eraserMode, points, zoom, panOffset) {
-                        if ((!connectMode && !pointEditMode) || drawMode || eraserMode) return@pointerInput
+                    .pointerInput(connectMode, pointEditMode, eraserMode, points, zoom, panOffset) {
+                        if ((!connectMode && !pointEditMode) || eraserMode) return@pointerInput
                         val gridPx = GRID_DP.dp.toPx() * zoom
                         awaitEachGesture {
                             val down = awaitFirstDownEvent()
@@ -253,8 +254,7 @@ fun GraphPointTool(
                                     curveX = dragPreviewCurve.x,
                                     curveY = dragPreviewCurve.y
                                 )
-                                connections = connections + newConn
-                                history.add(GraphAction.ConnectionAdded(newConn.id))
+                                recordUndo(); connections = connections + newConn
                                 pushData()
                             }
                             selectedPointId = null
@@ -264,8 +264,8 @@ fun GraphPointTool(
                             dragPreviewCurve = Offset.Zero
                         }
                     }
-                    .pointerInput(drawMode, eraserMode, zoom, panOffset, scaleRatioText, inkStrokes, points, connections) {
-                        if (!drawMode && !eraserMode) return@pointerInput
+                    .pointerInput(eraserMode, zoom, panOffset, scaleRatioText, inkStrokes, points, connections) {
+                        if (!eraserMode) return@pointerInput
                         val ratio = scaleRatioText.toFloatOrNull()?.takeIf { it > 0f } ?: 1f
                         val gridPx = GRID_DP.dp.toPx() * zoom
                         val originX = size.width / 2f + panOffset.x
@@ -280,31 +280,32 @@ fun GraphPointTool(
                                 currentInkPoints = gesturePoints
                             },
                             onDragEnd = {
-                                if (drawMode && gesturePoints.size > 1) {
-                                    inkStrokes = inkStrokes + GraphInkStroke(gesturePoints, inkColor.value.toLong())
-                                    pushData()
-                                } else if (eraserMode && gesturePoints.isNotEmpty()) {
+                                if (eraserMode && gesturePoints.isNotEmpty()) {
                                     val eraseRadius = 18f * ratio / gridPx
                                     fun nearErase(x: Float, y: Float) = gesturePoints.any { hypot((x - it.x).toDouble(), (y - it.y).toDouble()) <= eraseRadius }
-                                    inkStrokes = inkStrokes.filterNot { stroke -> stroke.points.any { nearErase(it.x, it.y) } }
                                     val erasedIds = points.filter { nearErase(it.x, it.y) }.map { it.id }.toSet()
-                                    points = points.filterNot { it.id in erasedIds }
-                                    connections = connections.filterNot { it.fromId in erasedIds || it.toId in erasedIds }
-                                    pushData()
+                                    val newStrokes = inkStrokes.filterNot { stroke -> stroke.points.any { nearErase(it.x, it.y) } }
+                                    if (erasedIds.isNotEmpty() || newStrokes.size != inkStrokes.size) {
+                                        recordUndo()
+                                        inkStrokes = newStrokes
+                                        points = points.filterNot { it.id in erasedIds }
+                                        connections = connections.filterNot { it.fromId in erasedIds || it.toId in erasedIds }
+                                        pushData()
+                                    }
                                 }
                                 currentInkPoints = emptyList(); gesturePoints = emptyList()
                             },
                             onDragCancel = { currentInkPoints = emptyList(); gesturePoints = emptyList() }
                         )
                     }
-                    .pointerInput(points, zoom, panOffset, connectMode, pointEditMode, drawMode, eraserMode, scaleRatioText) {
-                        if (connectMode || pointEditMode || drawMode || eraserMode) return@pointerInput
+                    .pointerInput(points, inkStrokes, zoom, panOffset, connectMode, pointEditMode, eraserMode, eyedropperMode, scaleRatioText) {
+                        if (connectMode || pointEditMode || eraserMode) return@pointerInput
                         detectTapGestures { position ->
                             val gridPx = GRID_DP.dp.toPx() * zoom
                             val ratio = scaleRatioText.toFloatOrNull()?.takeIf { it > 0f } ?: 1f
                             val originX = size.width / 2f + panOffset.x
                             val originY = size.height / 2f + panOffset.y
-                            selectedPointId = points.minByOrNull { point ->
+                            val tappedPoint = points.minByOrNull { point ->
                                 val px = originX + (point.x / ratio) * gridPx
                                 val py = originY - (point.y / ratio) * gridPx
                                 hypot((px - position.x).toDouble(), (py - position.y).toDouble())
@@ -312,7 +313,24 @@ fun GraphPointTool(
                                 val px = originX + (point.x / ratio) * gridPx
                                 val py = originY - (point.y / ratio) * gridPx
                                 hypot((px - position.x).toDouble(), (py - position.y).toDouble()) <= HIT_RADIUS_PX
-                            }?.id
+                            }
+                            if (eyedropperMode) {
+                                val sampledPoint = tappedPoint?.let { point -> if (point.color == 0L) pointColor else Color(point.color.toULong()) }
+                                val strokeColor = inkStrokes.asSequence().flatMap { stroke -> stroke.points.asSequence().map { stroke to it } }
+                                    .map { (stroke, p) ->
+                                        val px = originX + (p.x / ratio) * gridPx
+                                        val py = originY - (p.y / ratio) * gridPx
+                                        stroke to hypot((px - position.x).toDouble(), (py - position.y).toDouble())
+                                    }.filter { it.second <= HIT_RADIUS_PX }.minByOrNull { it.second }?.first?.color?.let { Color(it.toULong()) }
+                                val sampled = sampledPoint ?: strokeColor
+                                if (sampled != null) {
+                                    inkColor = sampled
+                                    customColorHex = String.format("#%06X", 0xFFFFFF and sampled.toArgb())
+                                    eyedropperMode = false
+                                }
+                            } else {
+                                selectedPointId = tappedPoint?.id
+                            }
                         }
                     }
             ) {
@@ -450,48 +468,18 @@ fun GraphPointTool(
         }
 
         Text(
-            text = if (connectMode) {
+            text = if (eyedropperMode) {
+                "Eyedropper active · tap a point or drawn mark to sample its color"
+            } else if (connectMode) {
                 if (selectedPointId == null) "Tap a point to start a connection" else "Tap (or tap+drag to curve) another point to connect"
             } else if (pointEditMode) {
-                if (selectedPointId == null) "Tap a point to select it for recoloring or removal" else "Point selected · choose a color or remove it from the menu"
+                if (selectedPointId == null) "Tap a point to select it for recoloring or removal" else "Point selected - choose a color or remove it"
             } else {
                 "Pinch to zoom, drag to pan (${(zoom * 100).toInt()}%)"
             },
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp)
-        )
-    }
-
-    if (showScaleDialog) {
-        AlertDialog(
-            onDismissRequest = { showScaleDialog = false },
-            containerColor = MaterialTheme.colorScheme.surface,
-            shape = RoundedCornerShape(20.dp),
-            title = { Text("Scale Ratio", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface) },
-            text = {
-                OutlinedTextField(
-                    value = scaleRatioText,
-                    onValueChange = { scaleRatioText = it },
-                    label = { Text("Grid square ratio") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal),
-                    modifier = Modifier.fillMaxWidth()
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    pushData()
-                    showScaleDialog = false
-                }) {
-                    Text("Add Point", color = MaterialTheme.colorScheme.onSurface)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showScaleDialog = false }) {
-                    Text("Cancel", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
         )
     }
 
@@ -513,30 +501,49 @@ fun GraphPointTool(
     }
 
     if (showColorDialog) {
+        val palette = listOf(
+            Color(0xFFE53935), Color(0xFFD81B60), Color(0xFF8E24AA), Color(0xFF5E35B1), Color(0xFF3949AB), Color(0xFF1E88E5),
+            Color(0xFF039BE5), Color(0xFF00ACC1), Color(0xFF00897B), Color(0xFF43A047), Color(0xFF7CB342), Color(0xFFC0CA33),
+            Color(0xFFFDD835), Color(0xFFFFB300), Color(0xFFFB8C00), Color(0xFFF4511E), Color(0xFF6D4C41), Color(0xFF757575),
+            Color(0xFF000000), Color(0xFF424242), Color(0xFF9E9E9E), Color(0xFFFFFFFF), Color(0xFF90CAF9), Color(0xFFA5D6A7)
+        )
         AlertDialog(
             onDismissRequest = { showColorDialog = false },
-            title = { Text("Custom point color") },
+            title = { Text("Color panel") },
             text = {
-                OutlinedTextField(
-                    value = customColorHex,
-                    onValueChange = { customColorHex = it },
-                    label = { Text("Hex color (for example #FF2457)") },
-                    singleLine = true
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(value = customColorHex, onValueChange = { customColorHex = it }, label = { Text("Color hex") }, singleLine = true)
+                    palette.chunked(6).forEach { rowColors ->
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            rowColors.forEach { color ->
+                                Box(Modifier.size(30.dp).background(color, RoundedCornerShape(50)).clickable { customColorHex = String.format("#%06X", 0xFFFFFF and color.toArgb()) }.border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(50)))
+                            }
+                        }
+                    }
+                }
             },
             confirmButton = {
                 TextButton(onClick = {
                     try {
                         val color = android.graphics.Color.parseColor(customColorHex)
                         val pickedColor = Color(color)
-                        selectedPointId?.let { id -> points = points.map { if (it.id == id) it.copy(color = pickedColor.value.toLong()) else it } }
+                        selectedPointId?.let { id -> recordUndo(); points = points.map { if (it.id == id) it.copy(color = pickedColor.value.toLong()) else it } }
                         inkColor = pickedColor
                         pushData()
                         showColorDialog = false
                     } catch (_: IllegalArgumentException) { }
                 }) { Text("Apply") }
             },
-            dismissButton = { TextButton(onClick = { showColorDialog = false }) { Text("Cancel") } }
+            dismissButton = {
+                Row {
+                    TextButton(onClick = { showColorDialog = false; eyedropperMode = true }) {
+                        Icon(Icons.Filled.Colorize, contentDescription = null)
+                        Spacer(Modifier.width(4.dp))
+                        Text("Eyedropper")
+                    }
+                    TextButton(onClick = { showColorDialog = false }) { Text("Cancel") }
+                }
+            }
         )
     }
 

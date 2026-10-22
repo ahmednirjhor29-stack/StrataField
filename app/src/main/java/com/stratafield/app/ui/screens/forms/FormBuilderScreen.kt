@@ -699,26 +699,12 @@ internal fun FormFillScreen(
                         .fillMaxSize()
                         .padding(12.dp)
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "Graph Paper",
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.weight(1f)
-                        )
-                        IconButton(onClick = { showGraphPaper = false }) {
-                            Icon(Icons.Filled.Close, contentDescription = "Done")
-                        }
-                    }
                     GraphPointTool(
                         modifier = Modifier
                             .fillMaxWidth()
                             .weight(1f),
                         initialData = fieldId?.let { deserializeGraphPaper(formData[it] ?: "") } ?: GraphPaperData(),
+                        onClose = { showGraphPaper = false },
                         onDataChange = { data ->
                             fieldId?.let { formData[it] = serializeGraphPaper(data) }
                         }
