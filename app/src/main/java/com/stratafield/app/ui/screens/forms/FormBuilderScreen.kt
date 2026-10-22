@@ -1164,22 +1164,22 @@ private fun SurveyLocationField(
     }
 
     fun captureGps() {
-        gpsStatus = "Getting GPS fix…"
+        gpsStatus = if (location.latitude != null && location.longitude != null) "Refreshing location…" else "Getting location…"
         requestCurrentLocation(context) { fix ->
             if (fix == null) {
-                gpsStatus = "No GPS fix received. Move outdoors and try again."
+                if (location.latitude == null || location.longitude == null) gpsStatus = "No location fix. Check location services and try again."
             } else {
                 val updated = location.copy(
                     latitude = fix.latitude,
                     longitude = fix.longitude,
-                    gnssElevation = fix.altitude.takeIf { fix.hasAltitude() }
+                    gnssElevation = if (fix.hasAltitude()) fix.altitude else location.gnssElevation
                 )
                 save(updated)
                 val coordinates = coordinatesInCrs(updated)
                 northSouthText = coordinates.first
                 eastWestText = coordinates.second
                 gnssElevationText = updated.gnssElevation?.let(::formatMeters) ?: ""
-                gpsStatus = "GPS accuracy: ${fix.accuracy.toInt()} m"
+                gpsStatus = "Location accuracy: ${fix.accuracy.toInt()} m"
             }
         }
     }
@@ -1375,31 +1375,52 @@ private fun fromUtm(easting: Double, northingInput: Double, zone: Int, north: Bo
 @Suppress("MissingPermission")
 private fun requestCurrentLocation(context: Context, onResult: (Location?) -> Unit) {
     val manager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
-    val provider = when {
-        manager.isProviderEnabled(LocationManager.GPS_PROVIDER) -> LocationManager.GPS_PROVIDER
-        manager.isProviderEnabled(LocationManager.NETWORK_PROVIDER) -> LocationManager.NETWORK_PROVIDER
-        else -> null
+    val providers = listOf(LocationManager.NETWORK_PROVIDER, LocationManager.GPS_PROVIDER)
+    var bestFix: Location? = null
+
+    fun deliverIfBetter(fix: Location?) {
+        if (fix == null) return
+        val previous = bestFix
+        if (previous == null || fix.accuracy < previous.accuracy ||
+            (fix.time > previous.time + 15_000L && fix.accuracy <= previous.accuracy + 100f)) {
+            bestFix = fix
+            onResult(fix)
+        }
     }
-    if (provider == null) {
+
+    // Show a recent cached fix immediately, then refine it with live providers.
+    try {
+        val cached = providers.mapNotNull { provider ->
+            try { manager.getLastKnownLocation(provider) } catch (_: IllegalArgumentException) { null }
+        }.maxByOrNull { it.time }
+        deliverIfBetter(cached)
+    } catch (_: SecurityException) {
         onResult(null)
         return
     }
-    try {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            manager.getCurrentLocation(provider, null, context.mainExecutor, onResult)
-        } else {
-            manager.requestSingleUpdate(provider, object : LocationListener {
-                override fun onLocationChanged(location: Location) = onResult(location)
-                @Deprecated("Deprecated by Android") override fun onStatusChanged(provider: String?, status: Int, extras: android.os.Bundle?) = Unit
-                override fun onProviderEnabled(provider: String) = Unit
-                override fun onProviderDisabled(provider: String) = onResult(null)
-            }, Looper.getMainLooper())
+
+    var requestedProvider = false
+    providers.forEach { provider ->
+        try {
+            if (!manager.isProviderEnabled(provider)) return@forEach
+            requestedProvider = true
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                manager.getCurrentLocation(provider, null, context.mainExecutor) { fix -> deliverIfBetter(fix) }
+            } else {
+                manager.requestSingleUpdate(provider, object : LocationListener {
+                    override fun onLocationChanged(location: Location) = deliverIfBetter(location)
+                    @Deprecated("Deprecated by Android") override fun onStatusChanged(provider: String?, status: Int, extras: android.os.Bundle?) = Unit
+                    override fun onProviderEnabled(provider: String) = Unit
+                    override fun onProviderDisabled(provider: String) = Unit
+                }, Looper.getMainLooper())
+            }
+        } catch (_: SecurityException) {
+            // The permission may have been revoked while the request was starting.
+        } catch (_: IllegalArgumentException) {
+            // A device may omit a provider; continue with the other one.
         }
-    } catch (_: SecurityException) {
-        onResult(null)
-    } catch (_: IllegalArgumentException) {
-        onResult(null)
     }
+    if (bestFix == null && !requestedProvider) onResult(null)
 }
 
 
