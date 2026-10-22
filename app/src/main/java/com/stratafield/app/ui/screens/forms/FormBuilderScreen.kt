@@ -475,8 +475,6 @@ internal fun FormFillScreen(
     val templateFields = remember(template) { viewModel.parseFields(template.fieldsJson) }
     var extraFields by rememberSaveable(stateSaver = ExtraFieldsSaver) { mutableStateOf(emptyList()) }
     val formData = rememberSaveable(saver = FormDataSaver) { mutableStateMapOf() }
-    var topLatitude by rememberSaveable { mutableStateOf("") }
-    var topLongitude by rememberSaveable { mutableStateOf("") }
     var showDrawing by rememberSaveable { mutableStateOf(false) }
     var showGraphPaper by rememberSaveable { mutableStateOf(false) }
     var showImagePicker by rememberSaveable { mutableStateOf(false) }
@@ -486,31 +484,10 @@ internal fun FormFillScreen(
     var activeFieldId by rememberSaveable { mutableStateOf<String?>(null) }
     val allFields = templateFields + extraFields
     val locationFieldId = templateFields.firstOrNull { it.fieldType == FieldType.GPS }?.id
-    LaunchedEffect(locationFieldId, locationFieldId?.let { formData[it] }) {
-        val saved = locationFieldId?.let { formData[it] }.orEmpty()
-        if (saved.isNotBlank()) parseLocation(saved).let { loc ->
-            topLatitude = loc.latitude?.let { String.format(Locale.US, "%.7f", it) } ?: ""
-            topLongitude = loc.longitude?.let { String.format(Locale.US, "%.7f", it) } ?: ""
-        }
-    }
-
     Scaffold(
         containerColor = MaterialTheme.colorScheme.surface,
         topBar = {
-            Column {
-                StrataTopBar(title = template.name, onBack = onDismiss)
-                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    OutlinedTextField(topLatitude, { topLatitude = it }, label = { Text("Latitude") }, singleLine = true, modifier = Modifier.width(150.dp), keyboardOptions = KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal))
-                    OutlinedTextField(topLongitude, { topLongitude = it }, label = { Text("Longitude") }, singleLine = true, modifier = Modifier.width(150.dp), keyboardOptions = KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal))
-                    Button(onClick = {
-                        val lat = topLatitude.toDoubleOrNull(); val lon = topLongitude.toDoubleOrNull()
-                        if (lat != null && lon != null && locationFieldId != null) {
-                            val old = parseLocation(formData[locationFieldId].orEmpty())
-                            formData[locationFieldId] = Gson().toJson(old.copy(crs = "EPSG:4326", latitude = lat, longitude = lon))
-                        }
-                    }, enabled = locationFieldId != null) { Text("Add") }
-                }
-            }
+            StrataTopBar(title = template.name, onBack = onDismiss)
         },
         bottomBar = {
             Surface(
@@ -744,6 +721,15 @@ internal fun FormFillScreen(
                             .fillMaxWidth()
                             .weight(1f),
                         initialData = fieldId?.let { deserializeGraphPaper(formData[it] ?: "") } ?: GraphPaperData(),
+                        latitude = locationFieldId?.let { parseLocation(formData[it].orEmpty()).latitude?.let { lat -> String.format(Locale.US, "%.7f", lat) } }.orEmpty(),
+                        longitude = locationFieldId?.let { parseLocation(formData[it].orEmpty()).longitude?.let { lon -> String.format(Locale.US, "%.7f", lon) } }.orEmpty(),
+                        onAddCoordinates = { latitude, longitude ->
+                            val lat = latitude.toDoubleOrNull(); val lon = longitude.toDoubleOrNull()
+                            if (lat != null && lon != null && locationFieldId != null) {
+                                val old = parseLocation(formData[locationFieldId].orEmpty())
+                                formData[locationFieldId] = Gson().toJson(old.copy(crs = "EPSG:4326", latitude = lat, longitude = lon))
+                            }
+                        },
                         onDataChange = { data ->
                             fieldId?.let { formData[it] = serializeGraphPaper(data) }
                         }

@@ -66,6 +66,9 @@ private const val HIT_RADIUS_PX = 45f
 fun GraphPointTool(
     modifier: Modifier = Modifier,
     initialData: GraphPaperData = GraphPaperData(),
+    latitude: String = "",
+    longitude: String = "",
+    onAddCoordinates: (String, String) -> Unit = { _, _ -> },
     onDataChange: (GraphPaperData) -> Unit = {}
 ) {
     var scaleRatioText by remember { mutableStateOf(if (initialData.scaleRatio == 1f) "1" else initialData.scaleRatio.toString()) }
@@ -87,6 +90,8 @@ fun GraphPointTool(
     var showUnitDialog by remember { mutableStateOf(false) }
     var showColorDialog by remember { mutableStateOf(false) }
     var customColorHex by remember { mutableStateOf("#FF2457") }
+    var latitudeText by remember(latitude) { mutableStateOf(latitude) }
+    var longitudeText by remember(longitude) { mutableStateOf(longitude) }
 
     var zoom by remember { mutableStateOf(1f) }
     var panOffset by remember { mutableStateOf(Offset.Zero) }
@@ -103,6 +108,46 @@ fun GraphPointTool(
     val lineColor = MaterialTheme.colorScheme.onSurface
 
     Column(modifier = modifier.fillMaxSize()) {
+        Surface(Modifier.fillMaxWidth().padding(bottom = 8.dp), color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(12.dp), tonalElevation = 2.dp) {
+            Column(Modifier.padding(horizontal = 6.dp, vertical = 4.dp)) {
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                    RibbonToolButton(Icons.Filled.Undo, "Undo", history.isNotEmpty()) {
+                        val action = history.removeLastOrNull()
+                        if (action != null) {
+                            when (action) {
+                                is GraphAction.PointAdded -> { points = points.filterNot { it.id == action.id }; connections = connections.filterNot { it.fromId == action.id || it.toId == action.id } }
+                                is GraphAction.ConnectionAdded -> connections = connections.filterNot { it.id == action.id }
+                            }
+                            selectedPointId = null; pushData()
+                        }
+                    }
+                    RibbonToolButton(Icons.Filled.Add, "Add point") { showAddPoint = true }
+                    RibbonToolButton(Icons.Filled.Edit, "Select point") { pointEditMode = !pointEditMode; connectMode = false }
+                    RibbonToolButton(Icons.Filled.Palette, "Point color", selectedPointId != null) {
+                        customColorHex = selectedPointId?.let { id -> points.firstOrNull { it.id == id }?.color?.takeIf { it != 0L }?.let { String.format("#%06X", 0xFFFFFF and Color(it.toULong()).toArgb()) } } ?: "#FF2457"
+                        showColorDialog = true
+                    }
+                    RibbonToolButton(Icons.Filled.Delete, "Remove point", selectedPointId != null) { selectedPointId?.let { id -> points = points.filterNot { it.id == id }; connections = connections.filterNot { it.fromId == id || it.toId == id }; selectedPointId = null; pushData() } }
+                    RibbonToolButton(Icons.Filled.Timeline, "Connect") { connectMode = !connectMode; pointEditMode = false; selectedPointId = null }
+                    RibbonToolButton(Icons.Filled.RemoveRoad, "Remove lines", connections.isNotEmpty()) { connections = emptyList(); pushData() }
+                    RibbonToolButton(Icons.Filled.Tune, "Scale") { showScaleDialog = true }
+                    RibbonToolButton(Icons.Filled.Straighten, "Units") { showUnitDialog = true }
+                    RibbonToolButton(Icons.Filled.ZoomOut, "Zoom out") { zoom = (zoom / 1.25f).coerceIn(0.12f, 12f) }
+                    RibbonToolButton(Icons.Filled.ZoomIn, "Zoom in") { zoom = (zoom * 1.25f).coerceIn(0.12f, 12f) }
+                    RibbonToolButton(Icons.Filled.CenterFocusStrong, "Recenter") { zoom = 1f; panOffset = Offset.Zero }
+                    RibbonToolButton(Icons.Filled.ClearAll, "Clear") { points = emptyList(); connections = emptyList(); history.clear(); selectedPointId = null; pushData() }
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("Location", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    OutlinedTextField(latitudeText, { latitudeText = it }, label = { Text("Latitude") }, singleLine = true, modifier = Modifier.width(145.dp), keyboardOptions = KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal))
+                    OutlinedTextField(longitudeText, { longitudeText = it }, label = { Text("Longitude") }, singleLine = true, modifier = Modifier.width(145.dp), keyboardOptions = KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal))
+                    Button(onClick = { onAddCoordinates(latitudeText, longitudeText) }, enabled = latitudeText.toDoubleOrNull() != null && longitudeText.toDoubleOrNull() != null, contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)) {
+                        Icon(Icons.Filled.AddLocation, null, Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("Add")
+                    }
+                }
+            }
+        }
         // Canvas
         Box(
             modifier = Modifier
@@ -312,48 +357,6 @@ fun GraphPointTool(
                 color = MaterialTheme.colorScheme.onSurface
             )
 
-            Row(
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
-                    .padding(6.dp)
-                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f), RoundedCornerShape(24.dp))
-                    .padding(4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                IconButton(
-                    onClick = {
-                        val last = history.removeLastOrNull() ?: return@IconButton
-                        when (last) {
-                            is GraphAction.PointAdded -> {
-                                points = points.filterNot { it.id == last.id }
-                                connections = connections.filterNot { it.fromId == last.id || it.toId == last.id }
-                            }
-                            is GraphAction.ConnectionAdded -> {
-                                connections = connections.filterNot { it.id == last.id }
-                            }
-                        }
-                        selectedPointId = null
-                        pushData()
-                    },
-                    enabled = history.isNotEmpty()
-                ) {
-                    Icon(Icons.Filled.Undo, contentDescription = "Undo", tint = MaterialTheme.colorScheme.onSurface)
-                }
-
-                TextButton(onClick = { showAddPoint = true }) { Text("+ Point") }
-                TextButton(onClick = { pointEditMode = !pointEditMode; connectMode = false }) { Text(if (pointEditMode) "Select: on" else "Select point") }
-                TextButton(enabled = selectedPointId != null, onClick = { selectedPointId?.let { id -> selectedPointId = id; showColorDialog = true } }) { Text("Point color") }
-                TextButton(enabled = selectedPointId != null, onClick = { selectedPointId?.let { id -> points = points.filterNot { it.id == id }; connections = connections.filterNot { it.fromId == id || it.toId == id }; selectedPointId = null; pushData() } }) { Text("Remove point") }
-                TextButton(onClick = { connectMode = !connectMode; pointEditMode = false; selectedPointId = null }) { Text(if (connectMode) "Connect: on" else "Connect") }
-                TextButton(enabled = connections.isNotEmpty(), onClick = { connections = emptyList(); pushData() }) { Text("Remove lines") }
-                TextButton(onClick = { showScaleDialog = true }) { Text("Scale") }
-                TextButton(onClick = { showUnitDialog = true }) { Text("Units") }
-                TextButton(onClick = { zoom = 1f; panOffset = Offset.Zero }) { Text("Recenter") }
-                TextButton(onClick = { points = emptyList(); connections = emptyList(); history.clear(); selectedPointId = null; pushData() }) { Text("Clear") }
-            }
         }
 
         Text(
@@ -506,6 +509,21 @@ fun GraphPointTool(
                 }
             }
         )
+    }
+}
+
+@Composable
+private fun RibbonToolButton(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    enabled: Boolean = true,
+    onClick: () -> Unit
+) {
+    TextButton(onClick = onClick, enabled = enabled, contentPadding = PaddingValues(horizontal = 7.dp, vertical = 4.dp)) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Icon(icon, contentDescription = label, modifier = Modifier.size(20.dp))
+            Text(label, style = MaterialTheme.typography.labelSmall, maxLines = 1)
+        }
     }
 }
 
