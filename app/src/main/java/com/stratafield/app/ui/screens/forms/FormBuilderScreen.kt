@@ -18,7 +18,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -483,7 +482,6 @@ internal fun FormFillScreen(
     var showCompleteConfirm by rememberSaveable { mutableStateOf(false) }
     var activeFieldId by rememberSaveable { mutableStateOf<String?>(null) }
     val allFields = templateFields + extraFields
-    val locationFieldId = templateFields.firstOrNull { it.fieldType == FieldType.GPS }?.id
     Scaffold(
         containerColor = MaterialTheme.colorScheme.surface,
         topBar = {
@@ -721,15 +719,6 @@ internal fun FormFillScreen(
                             .fillMaxWidth()
                             .weight(1f),
                         initialData = fieldId?.let { deserializeGraphPaper(formData[it] ?: "") } ?: GraphPaperData(),
-                        latitude = locationFieldId?.let { parseLocation(formData[it].orEmpty()).latitude?.let { lat -> String.format(Locale.US, "%.7f", lat) } }.orEmpty(),
-                        longitude = locationFieldId?.let { parseLocation(formData[it].orEmpty()).longitude?.let { lon -> String.format(Locale.US, "%.7f", lon) } }.orEmpty(),
-                        onAddCoordinates = { latitude, longitude ->
-                            val lat = latitude.toDoubleOrNull(); val lon = longitude.toDoubleOrNull()
-                            if (lat != null && lon != null && locationFieldId != null) {
-                                val old = parseLocation(formData[locationFieldId].orEmpty())
-                                formData[locationFieldId] = Gson().toJson(old.copy(crs = "EPSG:4326", latitude = lat, longitude = lon))
-                            }
-                        },
                         onDataChange = { data ->
                             fieldId?.let { formData[it] = serializeGraphPaper(data) }
                         }
