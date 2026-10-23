@@ -38,7 +38,8 @@ fun DataManagementScreen(
     var sortOrder by remember { mutableStateOf(SortOrder.DESCENDING) }
     var statusFilter by remember { mutableStateOf<DataStatus?>(null) }
     var typeFilter by remember { mutableStateOf<FormType?>(null) }
-    var activeResponse by remember { mutableStateOf<FormResponse?>(null) }
+    var viewingResponse by remember { mutableStateOf<FormResponse?>(null) }
+    var viewingTemplate by remember { mutableStateOf<FormTemplate?>(null) }
     var editingResponse by remember { mutableStateOf<FormResponse?>(null) }
     var editingTemplate by remember { mutableStateOf<FormTemplate?>(null) }
     val scope = rememberCoroutineScope()
@@ -279,14 +280,20 @@ fun DataManagementScreen(
                 items(filteredResponses) { response ->
                     DataRecordCard(
                         response,
-                        onClick = { activeResponse = response },
+                        onClick = {
+                            scope.launch {
+                                viewingTemplate = viewModel.getFormTemplateForResponse(response)
+                                viewingResponse = response
+                            }
+                        },
                         onEdit = {
                             scope.launch {
                                 val template = viewModel.getFormTemplateForResponse(response)
                                 if (template == null) {
                                     Toast.makeText(context, "This form has no editable fields", Toast.LENGTH_SHORT).show()
                                 } else {
-                                    activeResponse = null
+                                    viewingResponse = null
+                                    viewingTemplate = null
                                     editingResponse = response
                                     editingTemplate = template
                                 }
@@ -298,21 +305,19 @@ fun DataManagementScreen(
         }
     }
 
-    activeResponse?.let { response ->
-        ResponseDialog(
+    viewingResponse?.let { response ->
+        FormResponseViewer(
             response = response,
-            viewModel = viewModel,
-            onDismiss = { activeResponse = null },
-            onSave = { updatedData ->
-                scope.launch {
-                    viewModel.updateFormResponse(
-                        response.copy(
-                            dataJson = viewModel.serializeResponseData(updatedData),
-                            updatedAt = System.currentTimeMillis()
-                        )
-                    )
-                    selectedProjectId?.let { viewModel.loadProjectDetail(it) }
-                    activeResponse = null
+            template = viewingTemplate,
+            data = viewModel.parseResponseData(response.dataJson),
+            onDismiss = { viewingResponse = null; viewingTemplate = null },
+            onEdit = {
+                val template = viewingTemplate
+                if (template != null) {
+                    editingResponse = response
+                    editingTemplate = template
+                    viewingResponse = null
+                    viewingTemplate = null
                 }
             }
         )

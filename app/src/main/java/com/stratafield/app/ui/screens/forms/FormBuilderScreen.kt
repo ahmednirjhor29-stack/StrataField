@@ -706,7 +706,7 @@ internal fun FormFillScreen(
             title = { Text("Complete form?", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface) },
             text = {
                 Text(
-                    text = "After pressing Complete, this form will be added to the data list and you will not be able to edit it further.",
+                    text = "This form will be marked complete and added to the data list. You can still edit it later.",
                     color = MaterialTheme.colorScheme.onSurface
                 )
             },

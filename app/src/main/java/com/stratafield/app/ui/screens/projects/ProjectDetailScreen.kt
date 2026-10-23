@@ -60,6 +60,7 @@ fun ProjectDetailScreen(
     var activeFormTemplate by remember { mutableStateOf<FormTemplate?>(null) }
     var editingFormResponse by remember { mutableStateOf<FormResponse?>(null) }
     var activeResponse by remember { mutableStateOf<FormResponse?>(null) }
+    var activeResponseTemplate by remember { mutableStateOf<FormTemplate?>(null) }
 
     LaunchedEffect(projectId) {
         viewModel.loadProjectDetail(projectId)
@@ -67,6 +68,13 @@ fun ProjectDetailScreen(
 
     val surveyResponses = responses.filter { it.formType == FormType.SURVEY }
     val excavationResponses = responses.filter { it.formType == FormType.TRENCH }
+
+    fun viewResponse(response: FormResponse) {
+        scope.launch {
+            activeResponseTemplate = viewModel.getFormTemplateForResponse(response)
+            activeResponse = response
+        }
+    }
 
     val tabs = listOf("Dashboard", "Survey", "Excavation")
 
@@ -167,7 +175,7 @@ fun ProjectDetailScreen(
                     surveyResponses = surveyResponses,
                     sites = sites,
                     onAddSite = { showNewSite = true },
-                    onResponseClick = { activeResponse = it },
+                    onResponseClick = ::viewResponse,
                     onResponseEdit = { response ->
                         scope.launch {
                             val template = viewModel.getFormTemplateForResponse(response)
@@ -184,7 +192,7 @@ fun ProjectDetailScreen(
                             activeFormTemplate = viewModel.getOrCreateProjectFormTemplate(FormType.TRENCH)
                         }
                     },
-                    onResponseClick = { activeResponse = it },
+                    onResponseClick = ::viewResponse,
                     onResponseEdit = { response ->
                         scope.launch {
                             val template = viewModel.getFormTemplateForResponse(response)
@@ -266,10 +274,20 @@ fun ProjectDetailScreen(
     }
 
     activeResponse?.let { response ->
-        FormResponseViewDialog(
+        FormResponseViewer(
             response = response,
+            template = activeResponseTemplate,
             data = viewModel.parseResponseData(response.dataJson),
-            onDismiss = { activeResponse = null }
+            onDismiss = { activeResponse = null; activeResponseTemplate = null },
+            onEdit = {
+                val template = activeResponseTemplate
+                if (template != null) {
+                    editingFormResponse = response
+                    activeFormTemplate = template
+                    activeResponse = null
+                    activeResponseTemplate = null
+                }
+            }
         )
     }
 }
