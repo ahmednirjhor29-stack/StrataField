@@ -135,6 +135,22 @@ fun GraphPointTool(
 
     fun snapshot() = GraphSnapshot(points.toList(), connections.toList(), inkStrokes.toList(), scaleRatioText, squareUnit, anchor)
     fun recordUndo() { history.add(snapshot()); redoHistory.clear() }
+    fun changeScaleRatio(newRatio: Float) {
+        val oldRatio=scaleRatioText.toFloatOrNull()?.takeIf { it>0f } ?: 1f
+        if(!newRatio.isFinite() || newRatio<=0f || newRatio==oldRatio) return
+        recordUndo()
+        val factor=newRatio/oldRatio
+        // Recalibrate stored coordinates while counter-scaling the canvas transform.
+        // This updates scale measurements without moving existing marks on the paper.
+        points=points.map { it.copy(x=it.x*factor,y=it.y*factor) }
+        inkStrokes=inkStrokes.map { stroke -> stroke.copy(points=stroke.points.map { GraphInkPoint(it.x*factor,it.y*factor) }) }
+        anchor=anchor*factor
+        xInput=xInput.toFloatOrNull()?.let { (it*factor).toString() } ?: xInput
+        yInput=yInput.toFloatOrNull()?.let { (it*factor).toString() } ?: yInput
+        scaleRatioText=newRatio.toString()
+        ratioInput=newRatio.toString()
+        pushData()
+    }
     fun undo() {
         val previous = history.removeLastOrNull() ?: return
         redoHistory.add(snapshot())
@@ -184,7 +200,7 @@ fun GraphPointTool(
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                     RibbonToolButton(Icons.Filled.CenterFocusStrong, "Center", true, Modifier.weight(1f)) { val g=GRID_DP*density*zoom; val ratio=scaleRatioText.toFloatOrNull()?.takeIf { it>0f }?:1f; panOffset=-rotateVector(Offset(anchor.x/ratio*g,-anchor.y/ratio*g),rotation) }
-                    Row(Modifier.weight(3f).height(56.dp), verticalAlignment=Alignment.CenterVertically, horizontalArrangement=Arrangement.Center) {
+                    Row(Modifier.weight(2f).height(40.dp), verticalAlignment=Alignment.CenterVertically, horizontalArrangement=Arrangement.Center) {
                         Text("1:", style=MaterialTheme.typography.labelLarge, color=MaterialTheme.colorScheme.onSurface)
                         Spacer(Modifier.width(4.dp))
                         OutlinedTextField(
@@ -192,16 +208,16 @@ fun GraphPointTool(
                             onValueChange={ text ->
                                 ratioInput=text
                                 val ratio=text.toFloatOrNull()?.takeIf { it.isFinite() && it>0f }
-                                if(ratio!=null) { scaleRatioText=ratio.toString(); pushData() }
+                                if(ratio!=null) changeScaleRatio(ratio)
                             },
                             singleLine=true,
-                            textStyle=MaterialTheme.typography.labelMedium,
+                            textStyle=MaterialTheme.typography.labelLarge,
                             keyboardOptions=KeyboardOptions(keyboardType=androidx.compose.ui.text.input.KeyboardType.Decimal),
-                            modifier=Modifier.width(82.dp).height(56.dp)
+                            modifier=Modifier.width(48.dp).height(40.dp)
                         )
                     }
                     RibbonToolButton(Icons.Filled.Straighten, "Units", true, Modifier.weight(1f)) { showUnitDialog = true }
-                    repeat(3) { Spacer(Modifier.weight(1f)) }
+                    repeat(4) { Spacer(Modifier.weight(1f)) }
                 }
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 Row(Modifier.fillMaxWidth().padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
