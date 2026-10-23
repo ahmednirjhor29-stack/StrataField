@@ -714,7 +714,7 @@ private fun SitesTab(
                         if (site.latitude != null && site.longitude != null) {
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
-                                text = String.format(Locale.getDefault(), "%.6f, %.6f", site.latitude, site.longitude),
+                                text = String.format(Locale.US, "%.8f, %.8f", site.latitude, site.longitude),
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )

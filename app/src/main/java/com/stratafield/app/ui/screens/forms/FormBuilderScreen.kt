@@ -1316,14 +1316,14 @@ private fun coordinatesInCrs(data: SurveyLocationData, format: String = "Decimal
         formatMeters(y) to formatMeters(x)
     } else {
         if (format == "Degrees, minutes, seconds") formatDms(latitude) to formatDms(longitude)
-        else String.format(Locale.US, "%.4f", latitude) to String.format(Locale.US, "%.4f", longitude)
+        else String.format(Locale.US, "%.8f", latitude) to String.format(Locale.US, "%.8f", longitude)
     }
 }
 
 private fun formatDms(value: Double): String {
     val absolute=kotlin.math.abs(value); val degrees=absolute.toInt(); val minutesFloat=(absolute-degrees)*60.0; val minutes=minutesFloat.toInt(); val seconds=(minutesFloat-minutes)*60.0
     val direction=if(value<0) "S/W" else "N/E"
-    return String.format(Locale.US,"%d° %02d′ %05.2f″ %s",degrees,minutes,seconds,direction)
+    return String.format(Locale.US,"%d° %02d′ %07.4f″ %s",degrees,minutes,seconds,direction)
 }
 
 private fun parseCoordinate(value: String): Double? = value.toDoubleOrNull() ?: run {
