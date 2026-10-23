@@ -10,6 +10,7 @@ import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.zIndex
 import androidx.compose.foundation.text.KeyboardActions
@@ -59,13 +60,14 @@ data class GraphPaperData(
     val squareUnit: String = "cm",
     val points: List<GraphPoint> = emptyList(),
     val connections: List<GraphConnection> = emptyList(),
-    val inkStrokes: List<GraphInkStroke>? = emptyList()
+    val inkStrokes: List<GraphInkStroke>? = emptyList(),
+    val scaleRatioNumerator: Float = 1f
 )
 
 data class GraphInkPoint(val x: Float, val y: Float)
 data class GraphInkStroke(val points: List<GraphInkPoint>, val color: Long, val width: Float = 3f)
 
-private data class GraphSnapshot(val points: List<GraphPoint>, val connections: List<GraphConnection>, val inkStrokes: List<GraphInkStroke>, val scaleRatio: String, val unit: String, val anchor: Offset)
+private data class GraphSnapshot(val points: List<GraphPoint>, val connections: List<GraphConnection>, val inkStrokes: List<GraphInkStroke>, val scaleRatio: String, val ratioNumerator: String, val ratioDenominator: String, val unit: String, val anchor: Offset)
 
 private const val GRID_DP = 28f
 private const val HIT_RADIUS_PX = 45f
@@ -82,8 +84,10 @@ fun GraphPointTool(
     val density = LocalDensity.current.density
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
+    val initialNumerator = initialData.scaleRatioNumerator.takeIf { it.isFinite() && it > 0f } ?: 1f
     var scaleRatioText by remember { mutableStateOf(ratioFieldText(initialData.scaleRatio)) }
-    var ratioInput by remember { mutableStateOf(ratioFieldText(initialData.scaleRatio)) }
+    var ratioNumeratorInput by remember { mutableStateOf(ratioFieldText(initialNumerator)) }
+    var ratioDenominatorInput by remember { mutableStateOf(ratioFieldText(initialData.scaleRatio * initialNumerator)) }
     var squareUnit by remember { mutableStateOf(initialData.squareUnit.ifBlank { "cm" }) }
     var points by remember { mutableStateOf(initialData.points) }
     var connections by remember { mutableStateOf(initialData.connections) }
@@ -121,13 +125,13 @@ fun GraphPointTool(
 
     fun pushData() {
         val ratio = scaleRatioText.toFloatOrNull()?.takeIf { it > 0f } ?: 1f
-        onDataChange(GraphPaperData(ratio, squareUnit, points, connections, inkStrokes))
+        onDataChange(GraphPaperData(ratio, squareUnit, points, connections, inkStrokes, ratioNumeratorInput.toFloatOrNull()?.takeIf { it > 0f } ?: 1f))
     }
 
     fun changeUnit(newUnit: String) {
         val oldUnit = squareUnit
         if (oldUnit == newUnit) return
-        history.add(GraphSnapshot(points.toList(),connections.toList(),inkStrokes.toList(),scaleRatioText,squareUnit,anchor))
+        history.add(GraphSnapshot(points.toList(),connections.toList(),inkStrokes.toList(),scaleRatioText,ratioNumeratorInput,ratioDenominatorInput,squareUnit,anchor))
         redoHistory.clear()
         // Keep the grid calibration number fixed in the newly selected unit.
         // This converts coordinates to the new unit and redraws them at their
@@ -141,35 +145,38 @@ fun GraphPointTool(
         pushData()
     }
 
-    fun snapshot() = GraphSnapshot(points.toList(), connections.toList(), inkStrokes.toList(), scaleRatioText, squareUnit, anchor)
+    fun snapshot() = GraphSnapshot(points.toList(), connections.toList(), inkStrokes.toList(), scaleRatioText, ratioNumeratorInput, ratioDenominatorInput, squareUnit, anchor)
     fun recordUndo() { history.add(snapshot()); redoHistory.clear() }
-    fun changeScaleRatio(newRatio: Float) {
+    fun changeScaleRatio(newRatio: Float, numeratorText: String, denominatorText: String) {
         val oldRatio=scaleRatioText.toFloatOrNull()?.takeIf { it>0f } ?: 1f
-        if(!newRatio.isFinite() || newRatio<=0f || newRatio==oldRatio) return
-        recordUndo()
-        val factor=newRatio/oldRatio
-        // Recalibrate stored coordinates while counter-scaling the canvas transform.
-        // This updates scale measurements without moving existing marks on the paper.
-        points=points.map { it.copy(x=it.x*factor,y=it.y*factor) }
-        inkStrokes=inkStrokes.map { stroke -> stroke.copy(points=stroke.points.map { GraphInkPoint(it.x*factor,it.y*factor) }) }
-        anchor=anchor*factor
-        xInput=xInput.toFloatOrNull()?.let { (it*factor).toString() } ?: xInput
-        yInput=yInput.toFloatOrNull()?.let { (it*factor).toString() } ?: yInput
-        scaleRatioText=newRatio.toString()
+        if(!newRatio.isFinite() || newRatio<=0f) return
+        if(newRatio!=oldRatio) {
+            recordUndo()
+            val factor=newRatio/oldRatio
+            // Recalibrate stored coordinates while preserving their positions on the paper.
+            points=points.map { it.copy(x=it.x*factor,y=it.y*factor) }
+            inkStrokes=inkStrokes.map { stroke -> stroke.copy(points=stroke.points.map { GraphInkPoint(it.x*factor,it.y*factor) }) }
+            anchor=anchor*factor
+            xInput=xInput.toFloatOrNull()?.let { ratioFieldText(it*factor) } ?: xInput
+            yInput=yInput.toFloatOrNull()?.let { ratioFieldText(it*factor) } ?: yInput
+            scaleRatioText=ratioFieldText(newRatio)
+        }
+        ratioNumeratorInput=numeratorText
+        ratioDenominatorInput=denominatorText
         pushData()
     }
     fun undo() {
         val previous = history.removeLastOrNull() ?: return
         redoHistory.add(snapshot())
         points = previous.points; connections = previous.connections; inkStrokes = previous.inkStrokes
-        scaleRatioText=previous.scaleRatio; ratioInput=previous.scaleRatio.toFloatOrNull()?.let(::ratioFieldText) ?: previous.scaleRatio; squareUnit=previous.unit; anchor=previous.anchor
+        scaleRatioText=previous.scaleRatio; ratioNumeratorInput=previous.ratioNumerator; ratioDenominatorInput=previous.ratioDenominator; squareUnit=previous.unit; anchor=previous.anchor
         selectedPointId = null; pushData()
     }
     fun redo() {
         val next = redoHistory.removeLastOrNull() ?: return
         history.add(snapshot())
         points = next.points; connections = next.connections; inkStrokes = next.inkStrokes
-        scaleRatioText=next.scaleRatio; ratioInput=next.scaleRatio.toFloatOrNull()?.let(::ratioFieldText) ?: next.scaleRatio; squareUnit=next.unit; anchor=next.anchor
+        scaleRatioText=next.scaleRatio; ratioNumeratorInput=next.ratioNumerator; ratioDenominatorInput=next.ratioDenominator; squareUnit=next.unit; anchor=next.anchor
         selectedPointId = null; pushData()
     }
 
@@ -207,25 +214,34 @@ fun GraphPointTool(
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                     RibbonToolButton(Icons.Filled.CenterFocusStrong, "Center", true, Modifier.weight(1f)) { val g=GRID_DP*density*zoom; val ratio=scaleRatioText.toFloatOrNull()?.takeIf { it>0f }?:1f; panOffset=-rotateVector(Offset(anchor.x/ratio*g,-anchor.y/ratio*g),rotation) }
-                    Row(Modifier.weight(2f).height(40.dp).zIndex(1f), verticalAlignment=Alignment.CenterVertically, horizontalArrangement=Arrangement.Center) {
-                        Text("1:", style=MaterialTheme.typography.labelLarge, color=MaterialTheme.colorScheme.onSurface)
-                        Spacer(Modifier.width(4.dp))
-                        OutlinedTextField(
-                            value=ratioInput,
-                            onValueChange={ text ->
-                                ratioInput=text
-                                val ratio=text.toFloatOrNull()?.takeIf { it.isFinite() && it>0f }
-                                if(ratio!=null) changeScaleRatio(ratio)
-                            },
-                            singleLine=true,
-                            textStyle=MaterialTheme.typography.labelLarge.copy(color=MaterialTheme.colorScheme.onSurface),
-                            keyboardOptions=KeyboardOptions(keyboardType=androidx.compose.ui.text.input.KeyboardType.Decimal, imeAction=androidx.compose.ui.text.input.ImeAction.Done),
-                            keyboardActions=KeyboardActions(onDone={
-                                focusManager.clearFocus()
-                                keyboardController?.hide()
-                            }),
-                            modifier=Modifier.width(72.dp).height(40.dp).zIndex(1f)
-                        )
+                    Row(Modifier.weight(3f).height(40.dp).zIndex(1f), verticalAlignment=Alignment.CenterVertically, horizontalArrangement=Arrangement.Center) {
+                        val ratioTextStyle = MaterialTheme.typography.labelLarge.copy(color=MaterialTheme.colorScheme.onSurface)
+                        val ratioKeyboard = KeyboardOptions(keyboardType=androidx.compose.ui.text.input.KeyboardType.Decimal, imeAction=androidx.compose.ui.text.input.ImeAction.Done)
+                        val ratioKeyboardActions = KeyboardActions(onDone={ focusManager.clearFocus(); keyboardController?.hide() })
+                        @Composable fun RatioInput(value: String, onValueChange: (String) -> Unit, isNumerator: Boolean) {
+                            BasicTextField(
+                                value=value,
+                                onValueChange={ text ->
+                                    val numeratorText=if(isNumerator) text else ratioNumeratorInput
+                                    val denominatorText=if(isNumerator) ratioDenominatorInput else text
+                                    val numerator=numeratorText.toFloatOrNull()?.takeIf { it.isFinite() && it>0f }
+                                    val denominator=denominatorText.toFloatOrNull()?.takeIf { it.isFinite() && it>0f }
+                                    if(numerator!=null && denominator!=null) changeScaleRatio(denominator/numerator,numeratorText,denominatorText)
+                                    onValueChange(text)
+                                },
+                                modifier=Modifier.weight(1f).height(28.dp)
+                                    .border(0.7.dp,MaterialTheme.colorScheme.outline,RoundedCornerShape(3.dp))
+                                    .padding(horizontal=3.dp, vertical=1.dp),
+                                singleLine=true,
+                                textStyle=ratioTextStyle,
+                                keyboardOptions=ratioKeyboard,
+                                keyboardActions=ratioKeyboardActions,
+                                decorationBox={ innerTextField -> Box(Modifier.fillMaxSize(),contentAlignment=Alignment.TopStart) { innerTextField() } }
+                            )
+                        }
+                        RatioInput(ratioNumeratorInput,{ ratioNumeratorInput=it },true)
+                        Text(":",Modifier.padding(horizontal=3.dp),style=MaterialTheme.typography.labelLarge,color=MaterialTheme.colorScheme.onSurface)
+                        RatioInput(ratioDenominatorInput,{ ratioDenominatorInput=it },false)
                     }
                     RibbonToolButton(Icons.Filled.Straighten, "Units", true, Modifier.weight(1f)) { showUnitDialog = true }
                     repeat(4) { Spacer(Modifier.weight(1f)) }

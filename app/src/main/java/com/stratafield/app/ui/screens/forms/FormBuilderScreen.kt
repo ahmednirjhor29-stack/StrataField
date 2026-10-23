@@ -1315,14 +1315,24 @@ private fun coordinatesInCrs(data: SurveyLocationData, format: String = "Decimal
         val y = radius * kotlin.math.ln(kotlin.math.tan(Math.PI / 4.0 + Math.toRadians(safeLatitude) / 2.0))
         formatMeters(y) to formatMeters(x)
     } else {
-        if (format == "Degrees, minutes, seconds") formatDms(latitude) to formatDms(longitude)
-        else String.format(Locale.US, "%.8f", latitude) to String.format(Locale.US, "%.8f", longitude)
+        if (format == "Degrees, minutes, seconds") formatDms(latitude, true) to formatDms(longitude, false)
+        else formatDecimalCoordinate(latitude, true) to formatDecimalCoordinate(longitude, false)
     }
 }
 
-private fun formatDms(value: Double): String {
+private fun formatDecimalCoordinate(value: Double, isLatitude: Boolean): String {
+    val hemisphere = when {
+        isLatitude && value < 0.0 -> "S"
+        isLatitude -> "N"
+        value < 0.0 -> "W"
+        else -> "E"
+    }
+    return String.format(Locale.US, "%.8f° %s", kotlin.math.abs(value), hemisphere)
+}
+
+private fun formatDms(value: Double, isLatitude: Boolean): String {
     val absolute=kotlin.math.abs(value); val degrees=absolute.toInt(); val minutesFloat=(absolute-degrees)*60.0; val minutes=minutesFloat.toInt(); val seconds=(minutesFloat-minutes)*60.0
-    val direction=if(value<0) "S/W" else "N/E"
+    val direction=when { isLatitude && value<0 -> "S"; isLatitude -> "N"; value<0 -> "W"; else -> "E" }
     return String.format(Locale.US,"%d° %02d′ %07.4f″ %s",degrees,minutes,seconds,direction)
 }
 

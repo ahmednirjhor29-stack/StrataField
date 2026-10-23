@@ -714,7 +714,12 @@ private fun SitesTab(
                         if (site.latitude != null && site.longitude != null) {
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
-                                text = String.format(Locale.US, "%.8f, %.8f", site.latitude, site.longitude),
+                                text = String.format(
+                                    Locale.US,
+                                    "%.8f° %s, %.8f° %s",
+                                    kotlin.math.abs(site.latitude), if (site.latitude >= 0.0) "N" else "S",
+                                    kotlin.math.abs(site.longitude), if (site.longitude >= 0.0) "E" else "W"
+                                ),
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
