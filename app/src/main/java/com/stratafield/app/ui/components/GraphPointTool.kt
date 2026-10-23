@@ -75,6 +75,7 @@ fun GraphPointTool(
 ) {
     val density = LocalDensity.current.density
     var scaleRatioText by remember { mutableStateOf(if (initialData.scaleRatio == 1f) "1" else initialData.scaleRatio.toString()) }
+    var ratioInput by remember { mutableStateOf(if (initialData.scaleRatio == 1f) "1" else initialData.scaleRatio.toString()) }
     var squareUnit by remember { mutableStateOf(initialData.squareUnit.ifBlank { "cm" }) }
     var points by remember { mutableStateOf(initialData.points) }
     var connections by remember { mutableStateOf(initialData.connections) }
@@ -138,14 +139,14 @@ fun GraphPointTool(
         val previous = history.removeLastOrNull() ?: return
         redoHistory.add(snapshot())
         points = previous.points; connections = previous.connections; inkStrokes = previous.inkStrokes
-        scaleRatioText=previous.scaleRatio; squareUnit=previous.unit; anchor=previous.anchor
+        scaleRatioText=previous.scaleRatio; ratioInput=previous.scaleRatio; squareUnit=previous.unit; anchor=previous.anchor
         selectedPointId = null; pushData()
     }
     fun redo() {
         val next = redoHistory.removeLastOrNull() ?: return
         history.add(snapshot())
         points = next.points; connections = next.connections; inkStrokes = next.inkStrokes
-        scaleRatioText=next.scaleRatio; squareUnit=next.unit; anchor=next.anchor
+        scaleRatioText=next.scaleRatio; ratioInput=next.scaleRatio; squareUnit=next.unit; anchor=next.anchor
         selectedPointId = null; pushData()
     }
 
@@ -182,10 +183,25 @@ fun GraphPointTool(
                     RibbonToolButton(Icons.Filled.MyLocation, "Anchor", true, Modifier.weight(1f), anchorMode) { anchorMode=!anchorMode; northMode=false }
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                    repeat(2) { Spacer(Modifier.weight(1f)) }
-                    RibbonToolButton(Icons.Filled.Straighten, "Units", true, Modifier.weight(1f)) { showUnitDialog = true }
                     RibbonToolButton(Icons.Filled.CenterFocusStrong, "Center", true, Modifier.weight(1f)) { val g=GRID_DP*density*zoom; val ratio=scaleRatioText.toFloatOrNull()?.takeIf { it>0f }?:1f; panOffset=-rotateVector(Offset(anchor.x/ratio*g,-anchor.y/ratio*g),rotation) }
-                    repeat(4) { Spacer(Modifier.weight(1f)) }
+                    Row(Modifier.weight(3f).height(56.dp), verticalAlignment=Alignment.CenterVertically, horizontalArrangement=Arrangement.Center) {
+                        Text("1:", style=MaterialTheme.typography.labelLarge, color=MaterialTheme.colorScheme.onSurface)
+                        Spacer(Modifier.width(4.dp))
+                        OutlinedTextField(
+                            value=ratioInput,
+                            onValueChange={ text ->
+                                ratioInput=text
+                                val ratio=text.toFloatOrNull()?.takeIf { it.isFinite() && it>0f }
+                                if(ratio!=null) { scaleRatioText=ratio.toString(); pushData() }
+                            },
+                            singleLine=true,
+                            textStyle=MaterialTheme.typography.labelMedium,
+                            keyboardOptions=KeyboardOptions(keyboardType=androidx.compose.ui.text.input.KeyboardType.Decimal),
+                            modifier=Modifier.width(82.dp).height(56.dp)
+                        )
+                    }
+                    RibbonToolButton(Icons.Filled.Straighten, "Units", true, Modifier.weight(1f)) { showUnitDialog = true }
+                    repeat(3) { Spacer(Modifier.weight(1f)) }
                 }
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 Row(Modifier.fillMaxWidth().padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
