@@ -22,6 +22,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.PointerEventPass
@@ -100,6 +101,12 @@ fun GraphPointTool(
 
     var zoom by remember { mutableStateOf(1f) }
     var panOffset by remember { mutableStateOf(Offset.Zero) }
+    var rotation by remember { mutableStateOf(0f) }
+    var rotationLocked by remember { mutableStateOf(false) }
+    var anchor by remember { mutableStateOf(Offset.Zero) }
+    var northArrow by remember { mutableStateOf(Offset(0f, -1f)) }
+    var anchorMode by remember { mutableStateOf(false) }
+    var northMode by remember { mutableStateOf(false) }
 
     fun pushData() {
         val ratio = scaleRatioText.toFloatOrNull()?.takeIf { it > 0f } ?: 1f
@@ -133,13 +140,14 @@ fun GraphPointTool(
             Text("Graph Paper", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
             IconButton(onClick = ::undo, enabled = history.isNotEmpty()) { Icon(Icons.Filled.Undo, contentDescription = "Undo") }
             IconButton(onClick = ::redo, enabled = redoHistory.isNotEmpty()) { Icon(Icons.Filled.Redo, contentDescription = "Redo") }
+            IconButton(onClick = { rotationLocked = !rotationLocked }) { Icon(Icons.Filled.Lock, contentDescription = if(rotationLocked) "Unlock rotation" else "Lock rotation", tint=if(rotationLocked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface) }
             Spacer(Modifier.weight(1f))
             IconButton(onClick = onClose) { Icon(Icons.Filled.Close, contentDescription = "Close graph paper") }
         }
         Surface(Modifier.fillMaxWidth().padding(bottom = 8.dp), color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(12.dp), tonalElevation = 2.dp) {
             Column(Modifier.padding(horizontal = 5.dp, vertical = 3.dp), verticalArrangement = Arrangement.spacedBy(0.dp)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                    RibbonToolButton(Icons.Filled.Backspace, "Eraser", true, Modifier.weight(1f), eraserMode) { eraserMode = !eraserMode; connectMode = false; pointEditMode = false }
+                    RibbonToolButton(Icons.Filled.CleaningServices, "Eraser", true, Modifier.weight(1f), eraserMode) { eraserMode = !eraserMode; connectMode = false; pointEditMode = false }
                     RibbonToolButton(Icons.Filled.TouchApp, "Select", true, Modifier.weight(1f), pointEditMode) { pointEditMode = !pointEditMode; connectMode = false; eraserMode = false }
                     RibbonToolButton(Icons.Filled.Timeline, "Connect", true, Modifier.weight(1f), connectMode) { connectMode = !connectMode; pointEditMode = false; eraserMode = false }
                     RibbonToolButton(Icons.Filled.Palette, "Color", true, Modifier.weight(1f)) {
@@ -149,11 +157,13 @@ fun GraphPointTool(
                     }
                     RibbonToolButton(Icons.Filled.Delete, "Del point", selectedPointId != null, Modifier.weight(1f)) { selectedPointId?.let { id -> recordUndo(); points = points.filterNot { it.id == id }; connections = connections.filterNot { it.fromId == id || it.toId == id }; selectedPointId = null; pushData() } }
                     RibbonToolButton(Icons.Filled.RemoveRoad, "Del lines", connections.isNotEmpty(), Modifier.weight(1f)) { if (connections.isNotEmpty()) { recordUndo(); connections = emptyList(); pushData() } }
+                    RibbonToolButton(Icons.Filled.Navigation, "North", true, Modifier.weight(1f), northMode) { northMode=!northMode; anchorMode=false }
+                    RibbonToolButton(Icons.Filled.MyLocation, "Anchor", true, Modifier.weight(1f), anchorMode) { anchorMode=!anchorMode; northMode=false }
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                     RibbonToolButton(Icons.Filled.Straighten, "Units", true, Modifier.weight(1f)) { showUnitDialog = true }
-                    RibbonToolButton(Icons.Filled.CenterFocusStrong, "Center", true, Modifier.weight(1f)) { zoom = 1f; panOffset = Offset.Zero }
-                    repeat(4) { Spacer(Modifier.weight(1f)) }
+                    RibbonToolButton(Icons.Filled.CenterFocusStrong, "Center", true, Modifier.weight(1f)) { panOffset = -anchor }
+                    repeat(2) { Spacer(Modifier.weight(1f)) }
                 }
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 Row(Modifier.fillMaxWidth().padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -181,12 +191,29 @@ fun GraphPointTool(
             Canvas(
                 modifier = Modifier
                     .fillMaxSize()
-                    .pointerInput(connectMode, pointEditMode, eraserMode) {
-                        if (connectMode || pointEditMode || eraserMode) return@pointerInput
-                        detectTransformGestures { _, pan, gestureZoom, _ ->
-                            zoom = (zoom * gestureZoom).coerceIn(0.12f, 12f)
-                            panOffset += pan
+                    .pointerInput(connectMode, pointEditMode, eraserMode, anchorMode, northMode, rotationLocked) {
+                        detectTransformGestures { centroid, pan, gestureZoom, gestureRotation ->
+                            if(anchorMode || northMode) return@detectTransformGestures
+                            val oldZoom=zoom; val newZoom=(oldZoom*gestureZoom).coerceIn(0.12f,12f)
+                            val center=Offset(size.width/2f,size.height/2f)
+                            val relative=centroid-center-panOffset
+                            panOffset=centroid-center-relative*(newZoom/oldZoom)+pan
+                            zoom=newZoom
+                            if(!rotationLocked && minOf(size.width,size.height)>0 && gestureRotation.isFinite()) {
+                                val raw=rotation+gestureRotation
+                                val targets=listOf(0f,45f,90f,135f,180f,225f,270f,315f,360f)
+                                val normalized=((raw%360f)+360f)%360f
+                                val nearest=targets.minBy { kotlin.math.abs((((it-normalized+540f)%360f)-180f)) }
+                                val distance=kotlin.math.abs((((nearest-normalized+540f)%360f)-180f))
+                                rotation=if(distance<3f) nearest else normalized
+                            }
                         }
+                    }
+                    .pointerInput(anchorMode, northMode) {
+                        if(anchorMode || northMode) detectDragGestures(
+                            onDragStart = { p -> if(anchorMode) anchor=p-Offset(size.width/2f,size.height/2f) else { val c=Offset(size.width-32.dp.toPx(),32.dp.toPx()); val d=p-c; val m=hypot(d.x.toDouble(),d.y.toDouble()).toFloat().coerceAtLeast(1f); northArrow=d/m } },
+                            onDrag = { change, _ -> change.consume(); if(anchorMode) anchor=change.position-Offset(size.width/2f,size.height/2f) else { val c=Offset(size.width-32.dp.toPx(),32.dp.toPx()); val d=change.position-c; val m=hypot(d.x.toDouble(),d.y.toDouble()).toFloat().coerceAtLeast(1f); northArrow=d/m } }
+                        )
                     }
                     .pointerInput(connectMode, pointEditMode, eraserMode, points, zoom, panOffset) {
                         if ((!connectMode && !pointEditMode) || eraserMode) return@pointerInput
@@ -339,6 +366,10 @@ fun GraphPointTool(
                 val originX = size.width / 2f + panOffset.x
                 val originY = size.height / 2f + panOffset.y
 
+                // Clip every label to the drawing surface; negative and positive ticks are generated from visible bounds.
+                drawContext.canvas.nativeCanvas.save()
+                drawContext.canvas.nativeCanvas.clipRect(0f,0f,size.width,size.height)
+
                 fun toPx(p: GraphPoint): Offset =
                     Offset(originX + (p.x / ratio) * gridPx, originY - (p.y / ratio) * gridPx)
 
@@ -455,6 +486,14 @@ fun GraphPointTool(
                         drawContext.canvas.nativeCanvas.drawText("(${formatAxisValue(p.x)}, ${formatAxisValue(p.y)})", px.x + 9.dp.toPx(), px.y - 7.dp.toPx(), coordinatePaint)
                     }
                 }
+                val arrowCenter=Offset(size.width-32.dp.toPx(),32.dp.toPx())
+                drawLine(NothingRed,arrowCenter,arrowCenter+northArrow*22.dp.toPx(),4.dp.toPx())
+                drawCircle(NothingRed,3.dp.toPx(),arrowCenter+northArrow*22.dp.toPx())
+                val anchorPx=Offset(size.width/2f,size.height/2f)+anchor
+                drawCircle(NothingRed,10.dp.toPx(),anchorPx,style=Stroke(2.dp.toPx()))
+                drawLine(NothingRed,anchorPx-Offset(14.dp.toPx(),0f),anchorPx+Offset(14.dp.toPx(),0f),2.dp.toPx())
+                drawLine(NothingRed,anchorPx-Offset(0f,14.dp.toPx()),anchorPx+Offset(0f,14.dp.toPx()),2.dp.toPx())
+                drawContext.canvas.nativeCanvas.restore()
             }
 
             Text(

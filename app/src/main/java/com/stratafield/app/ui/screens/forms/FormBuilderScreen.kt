@@ -579,7 +579,8 @@ internal fun FormFillScreen(
                             extraFields = extraFields + FormFieldDefinition(
                                 id = "graph_paper_${java.util.UUID.randomUUID().toString().take(8)}",
                                 label = "Graph Paper $count",
-                                fieldType = FieldType.GRAPH_PAPER
+                                fieldType = FieldType.GRAPH_PAPER,
+                                section = "Documentation"
                             )
                         }) {
                             Icon(Icons.Filled.GridOn, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -1131,6 +1132,8 @@ private fun SurveyLocationField(
     var gnssElevationText by remember(fieldId) { mutableStateOf(location.gnssElevation?.let(::formatMeters) ?: "") }
     var seaLevelElevationText by remember(fieldId) { mutableStateOf(location.seaLevelElevation) }
     var crsExpanded by remember { mutableStateOf(false) }
+    var coordinateFormat by rememberSaveable(fieldId) { mutableStateOf("Decimal degrees") }
+    var formatExpanded by remember { mutableStateOf(false) }
     var gpsStatus by remember { mutableStateOf("") }
 
     fun save(updated: SurveyLocationData) {
@@ -1150,7 +1153,7 @@ private fun SurveyLocationField(
                     gnssElevation = if (fix.hasAltitude()) fix.altitude else location.gnssElevation
                 )
                 save(updated)
-                val coordinates = coordinatesInCrs(updated)
+                val coordinates = coordinatesInCrs(updated, coordinateFormat)
                 northSouthText = coordinates.first
                 eastWestText = coordinates.second
                 gnssElevationText = updated.gnssElevation?.let(::formatMeters) ?: ""
@@ -1176,6 +1179,12 @@ private fun SurveyLocationField(
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (location.crs == "EPSG:4326") Box {
+            OutlinedButton(onClick={formatExpanded=true}, modifier=Modifier.fillMaxWidth()) { Text("Coordinate format: $coordinateFormat", modifier=Modifier.weight(1f)); Icon(Icons.Filled.ArrowDropDown, null) }
+            DropdownMenu(expanded=formatExpanded,onDismissRequest={formatExpanded=false}) {
+                listOf("Degrees, minutes, seconds", "Decimal degrees").forEach { option -> DropdownMenuItem(text={Text(option)},onClick={ coordinateFormat=option; val c=coordinatesInCrs(location,option); northSouthText=c.first; eastWestText=c.second; formatExpanded=false }) }
+            }
+        }
         Box {
             OutlinedButton(
                 onClick = { crsExpanded = true },
@@ -1190,7 +1199,7 @@ private fun SurveyLocationField(
                     DropdownMenuItem(text = { Text(label) }, onClick = {
                         val updated = location.copy(crs = crs)
                         save(updated)
-                        val coordinates = coordinatesInCrs(updated)
+                        val coordinates = coordinatesInCrs(updated, coordinateFormat)
                         northSouthText = coordinates.first
                         eastWestText = coordinates.second
                         crsExpanded = false
@@ -1204,8 +1213,8 @@ private fun SurveyLocationField(
                 value = northSouthText,
                 onValueChange = { input ->
                     northSouthText = input
-                    val first = input.toDoubleOrNull()
-                    val second = eastWestText.toDoubleOrNull()
+                    val first = parseCoordinate(input)
+                    val second = parseCoordinate(eastWestText)
                     if (first != null && second != null) {
                         val latLon = coordinatesToLatLon(first, second, location.crs)
                         save(location.copy(latitude = latLon.first, longitude = latLon.second))
@@ -1220,8 +1229,8 @@ private fun SurveyLocationField(
                 value = eastWestText,
                 onValueChange = { input ->
                     eastWestText = input
-                    val first = northSouthText.toDoubleOrNull()
-                    val second = input.toDoubleOrNull()
+                    val first = parseCoordinate(northSouthText)
+                    val second = parseCoordinate(input)
                     if (first != null && second != null) {
                         val latLon = coordinatesToLatLon(first, second, location.crs)
                         save(location.copy(latitude = latLon.first, longitude = latLon.second))
@@ -1283,7 +1292,7 @@ private fun parseLocation(value: String): SurveyLocationData = try {
 
 private fun formatMeters(value: Double): String = String.format(Locale.US, "%.2f", value)
 
-private fun coordinatesInCrs(data: SurveyLocationData): Pair<String, String> {
+private fun coordinatesInCrs(data: SurveyLocationData, format: String = "Decimal degrees"): Pair<String, String> {
     val latitude = data.latitude ?: return "" to ""
     val longitude = data.longitude ?: return "" to ""
     return if (data.crs.startsWith("EPSG:326") || data.crs.startsWith("EPSG:327")) {
@@ -1297,7 +1306,22 @@ private fun coordinatesInCrs(data: SurveyLocationData): Pair<String, String> {
         val y = radius * kotlin.math.ln(kotlin.math.tan(Math.PI / 4.0 + Math.toRadians(safeLatitude) / 2.0))
         formatMeters(y) to formatMeters(x)
     } else {
-        String.format(Locale.US, "%.7f", latitude) to String.format(Locale.US, "%.7f", longitude)
+        if (format == "Degrees, minutes, seconds") formatDms(latitude) to formatDms(longitude)
+        else String.format(Locale.US, "%.4f", latitude) to String.format(Locale.US, "%.4f", longitude)
+    }
+}
+
+private fun formatDms(value: Double): String {
+    val absolute=kotlin.math.abs(value); val degrees=absolute.toInt(); val minutesFloat=(absolute-degrees)*60.0; val minutes=minutesFloat.toInt(); val seconds=(minutesFloat-minutes)*60.0
+    val direction=if(value<0) "S/W" else "N/E"
+    return String.format(Locale.US,"%d° %02d′ %05.2f″ %s",degrees,minutes,seconds,direction)
+}
+
+private fun parseCoordinate(value: String): Double? = value.toDoubleOrNull() ?: run {
+    val numbers=Regex("[-+]?\\d+(?:\\.\\d+)?").findAll(value).mapNotNull { it.value.toDoubleOrNull() }.toList()
+    if(numbers.isEmpty()) null else {
+        val sign=if(value.contains('S',true)||value.contains('W',true)||numbers.first()<0) -1 else 1
+        sign*(kotlin.math.abs(numbers[0])+(numbers.getOrNull(1)?:0.0)/60.0+(numbers.getOrNull(2)?:0.0)/3600.0)
     }
 }
 
