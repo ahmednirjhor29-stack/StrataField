@@ -146,11 +146,16 @@ fun StratigraphicMatrixTool(modifier: Modifier = Modifier, initialValue: String 
             val viewportWidthPx = constraints.maxWidth.toFloat()
             val viewportHeightPx = constraints.maxHeight.toFloat()
             val routes=remember(matrix,grid,rows,cols,cellWidth,cellHeight,gapX,gapY) {
-                matrix.connections.associateWith { pair ->
-                    if(pair.size==2 && pair.all { it in grid.indices && grid[it]!=MATRIX_HOLE })
-                        matrixConnectionRoute(pair[0],pair[1],grid,rows,cols,cellWidth.value,cellHeight.value,gapX.value,gapY.value,1f/density)
+                val routed=linkedMapOf<List<Int>,List<Offset>>()
+                val prior=mutableListOf<List<Offset>>()
+                matrix.connections.forEach { pair ->
+                    val route=if(pair.size==2 && pair.all { it in grid.indices && grid[it]!=MATRIX_HOLE })
+                        matrixConnectionRoute(pair[0],pair[1],grid,rows,cols,cellWidth.value,cellHeight.value,gapX.value,gapY.value,3f/density,prior)
                     else emptyList()
+                    routed[pair]=route
+                    if(route.size>=2) prior.add(route)
                 }
+                routed
             }
             Box(Modifier.fillMaxSize().pointerInput(Unit) {
                 detectTransformGestures { centroid, panChange, zoomChange, _ ->
@@ -249,8 +254,21 @@ private fun SideAddButton(modifier: Modifier=Modifier,description: String,onClic
     }
 }
 
-private fun matrixConnectionRoute(a:Int,b:Int,cells:List<String>,rows:Int,cols:Int,cw:Float,ch:Float,gx:Float,gy:Float,clearance:Float):List<Offset> {
+private fun matrixConnectionRoute(a:Int,b:Int,cells:List<String>,rows:Int,cols:Int,cw:Float,ch:Float,gx:Float,gy:Float,clearance:Float,priorRoutes:List<List<Offset>>):List<Offset> {
     if(a !in cells.indices || b !in cells.indices || a==b) return emptyList()
+    data class Port(val anchor:Offset,val outside:Offset)
+    fun ports(index:Int):List<Port> {
+        val r=index/cols; val c=index%cols; val left=c*(cw+gx); val top=r*(ch+gy)
+        val mx=left+cw/2f; val my=top+ch/2f
+        // Every connection starts and ends at a wall midpoint, then leaves the wall normally.
+        return listOf(
+            Port(Offset(left,my),Offset(left-clearance,my)),
+            Port(Offset(left+cw,my),Offset(left+cw+clearance,my)),
+            Port(Offset(mx,top),Offset(mx,top-clearance)),
+            Port(Offset(mx,top+ch),Offset(mx,top+ch+clearance))
+        )
+    }
+    val startPorts=ports(a); val endPorts=ports(b)
     val xs=sortedSetOf<Float>(); val ys=sortedSetOf<Float>()
     for(i in cells.indices) if(cells[i]!=MATRIX_HOLE) {
         val row=i/cols; val col=i%cols
@@ -264,14 +282,45 @@ private fun matrixConnectionRoute(a:Int,b:Int,cells:List<String>,rows:Int,cols:I
     val x=xs.toList(); val y=ys.toList(); val nx=x.size; val ny=y.size; val count=nx*ny
     fun id(ix:Int,iy:Int)=iy*nx+ix
     fun point(node:Int)=Offset(x[node%nx],y[node/nx])
+    startPorts.forEach { xs.add(it.outside.x); ys.add(it.outside.y) }
+    endPorts.forEach { xs.add(it.outside.x); ys.add(it.outside.y) }
     fun blocked(px:Float,py:Float):Boolean {
         for(index in cells.indices) {
             if(cells[index]==MATRIX_HOLE) continue
             val c=index%cols; val r=index/cols
             val left=c*(cw+gx); val top=r*(ch+gy)
-            val margin=if(index==a || index==b) 0f else clearance
-            if(px>left-margin+0.01f && px<left+cw+margin-0.01f &&
-                py>top-margin+0.01f && py<top+ch+margin-0.01f) return true
+            if(px>left-clearance+0.01f && px<left+cw+clearance-0.01f &&
+                py>top-clearance+0.01f && py<top+ch+clearance-0.01f) return true
+        }
+        return false
+    }
+    fun segmentConflict(p:Offset,q:Offset):Boolean {
+        for(route in priorRoutes) for(i in 0 until route.lastIndex) {
+            val u=route[i]; val v=route[i+1]
+            val oldHorizontal=kotlin.math.abs(u.y-v.y)<0.01f
+            val newHorizontal=kotlin.math.abs(p.y-q.y)<0.01f
+            if(oldHorizontal==newHorizontal) {
+                if(oldHorizontal) {
+                    val overlap=minOf(maxOf(p.x,q.x),maxOf(u.x,v.x))-maxOf(minOf(p.x,q.x),minOf(u.x,v.x))
+                    if(overlap>0.01f && kotlin.math.abs(p.y-u.y)<clearance) return true
+                } else {
+                    val overlap=minOf(maxOf(p.y,q.y),maxOf(u.y,v.y))-maxOf(minOf(p.y,q.y),minOf(u.y,v.y))
+                    if(overlap>0.01f && kotlin.math.abs(p.x-u.x)<clearance) return true
+                }
+            } else {
+                val horizontal=if(oldHorizontal) u to v else p to q
+                val vertical=if(oldHorizontal) p to q else u to v
+                val hx0=minOf(horizontal.first.x,horizontal.second.x); val hx1=maxOf(horizontal.first.x,horizontal.second.x)
+                val hy=horizontal.first.y
+                val vx=vertical.first.x; val vy0=minOf(vertical.first.y,vertical.second.y); val vy1=maxOf(vertical.first.y,vertical.second.y)
+                val intersects=vx in hx0..hx1 && hy in vy0..vy1
+                if(!intersects) {
+                    val dx=when { vx<hx0 -> hx0-vx; vx>hx1 -> vx-hx1; else -> 0f }
+                    val dy=when { hy<vy0 -> vy0-hy; hy>vy1 -> hy-vy1; else -> 0f }
+                    if(kotlin.math.hypot(dx.toDouble(),dy.toDouble())<clearance) return true
+                }
+            }
+            // Perpendicular intersections are allowed; parallel overlap and near passes are not.
         }
         return false
     }
@@ -281,30 +330,25 @@ private fun matrixConnectionRoute(a:Int,b:Int,cells:List<String>,rows:Int,cols:I
         val n=id(ix,iy); if(!free[n]) continue
         if(ix+1<nx) {
             val next=id(ix+1,iy); val midX=(x[ix]+x[ix+1])/2f
-            if(free[next] && !blocked(midX,y[iy])) {
+            if(free[next] && !blocked(midX,y[iy]) && !segmentConflict(point(n),point(next))) {
                 val cost=x[ix+1]-x[ix]; adjacency[n].add(next to cost); adjacency[next].add(n to cost)
             }
         }
         if(iy+1<ny) {
             val next=id(ix,iy+1); val midY=(y[iy]+y[iy+1])/2f
-            if(free[next] && !blocked(x[ix],midY)) {
+            if(free[next] && !blocked(x[ix],midY) && !segmentConflict(point(n),point(next))) {
                 val cost=y[iy+1]-y[iy]; adjacency[n].add(next to cost); adjacency[next].add(n to cost)
             }
         }
     }
-    fun boundaryNodes(index:Int):List<Int> {
-        val r=index/cols; val c=index%cols; val l=c*(cw+gx); val t=r*(ch+gy)
-        val xi=listOf(x.indexOf(l),x.indexOf(l+cw/2),x.indexOf(l+cw)).filter { it>=0 }
-        val yi=listOf(y.indexOf(t),y.indexOf(t+ch/2),y.indexOf(t+ch)).filter { it>=0 }
-        return buildList {
-            yi.forEach { iy -> xi.forEach { ix -> val n=id(ix,iy); if(free[n]) add(n) } }
-        }
-    }
-    val starts=boundaryNodes(a); val goals=boundaryNodes(b).toSet()
+    fun nodeAt(p:Offset):Int { val ix=x.indexOf(p.x); val iy=y.indexOf(p.y); return if(ix<0 || iy<0) -1 else id(ix,iy) }
+    val startNodes=startPorts.associate { nodeAt(it.outside) to it }.filterKeys { it>=0 }
+    val goalNodes=endPorts.associate { nodeAt(it.outside) to it }.filterKeys { it>=0 }
+    val starts=startNodes.keys; val goals=goalNodes.keys
     if(starts.isEmpty() || goals.isEmpty()) return emptyList()
     val distance=FloatArray(count) { Float.POSITIVE_INFINITY }; val previous=IntArray(count) { -1 }
     val queue=PriorityQueue<Pair<Int,Float>>(compareBy { it.second })
-    starts.forEach { distance[it]=0f; queue.add(it to 0f) }
+    starts.filter { free[it] }.forEach { distance[it]=0f; queue.add(it to 0f) }
     var found=-1
     while(queue.isNotEmpty()) {
         val (current,d)=queue.remove(); if(d!=distance[current]) continue
@@ -318,6 +362,10 @@ private fun matrixConnectionRoute(a:Int,b:Int,cells:List<String>,rows:Int,cols:I
     val route=mutableListOf<Offset>(); var node=found
     while(node>=0) { route.add(point(node)); node=previous[node] }
     route.reverse()
+    val startPort=startNodes[route.first().let { id(x.indexOf(it.x),y.indexOf(it.y)) }] ?: return emptyList()
+    val endPort=goalNodes[found] ?: return emptyList()
+    route.add(0,startPort.anchor)
+    route.add(endPort.anchor)
     // Drop collinear vertices to keep rendering and persistence lightweight.
     if(route.size<3) return route
     val simplified=mutableListOf(route.first())

@@ -24,6 +24,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
@@ -113,6 +114,7 @@ fun GraphPointTool(
     var showColorDialog by remember { mutableStateOf(false) }
     var eyedropperMode by remember { mutableStateOf(false) }
     var customColorHex by remember { mutableStateOf("#FF2457") }
+    var hsvColor by remember { mutableStateOf(floatArrayOf(0f, 0.85f, 1f)) }
 
     var zoom by remember { mutableStateOf(1f) }
     var panOffset by remember { mutableStateOf(Offset.Zero) }
@@ -203,6 +205,7 @@ fun GraphPointTool(
                     RibbonToolButton(Icons.Filled.Palette, "Color", true, Modifier.weight(1f)) {
                         customColorHex = selectedPointId?.let { id -> points.firstOrNull { it.id == id }?.color?.takeIf { it != 0L }?.let { String.format("#%06X", 0xFFFFFF and Color(it.toULong()).toArgb()) } }
                             ?: String.format("#%06X", 0xFFFFFF and inkColor.toArgb())
+                        hsvColor = FloatArray(3).also { android.graphics.Color.colorToHSV(android.graphics.Color.parseColor(customColorHex), it) }
                         showColorDialog = true
                     }
                     RibbonToolButton(Icons.Filled.Delete, "Del point", selectedPointId != null, Modifier.weight(1f)) { selectedPointId?.let { id -> recordUndo(); points = points.filterNot { it.id == id }; connections = connections.filterNot { it.fromId == id || it.toId == id }; selectedPointId = null; pushData() } }
@@ -612,25 +615,34 @@ fun GraphPointTool(
     }
 
     if (showColorDialog) {
-        val palette = listOf(
-            Color(0xFFE53935), Color(0xFFD81B60), Color(0xFF8E24AA), Color(0xFF5E35B1), Color(0xFF3949AB), Color(0xFF1E88E5),
-            Color(0xFF039BE5), Color(0xFF00ACC1), Color(0xFF00897B), Color(0xFF43A047), Color(0xFF7CB342), Color(0xFFC0CA33),
-            Color(0xFFFDD835), Color(0xFFFFB300), Color(0xFFFB8C00), Color(0xFFF4511E), Color(0xFF6D4C41), Color(0xFF757575),
-            Color(0xFF000000), Color(0xFF424242), Color(0xFF9E9E9E), Color(0xFFFFFFFF), Color(0xFF90CAF9), Color(0xFFA5D6A7)
-        )
+        fun updateSv(position: Offset, width: Float, height: Float) {
+            val next = hsvColor.copyOf()
+            next[1] = (position.x / width.coerceAtLeast(1f)).coerceIn(0f, 1f)
+            next[2] = (1f - position.y / height.coerceAtLeast(1f)).coerceIn(0f, 1f)
+            hsvColor = next
+            customColorHex = String.format("#%06X", 0xFFFFFF and android.graphics.Color.HSVToColor(next))
+        }
         AlertDialog(
             onDismissRequest = { showColorDialog = false },
             title = { Text("Color panel") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(value = customColorHex, onValueChange = { customColorHex = it }, label = { Text("Color hex") }, singleLine = true)
-                    palette.chunked(6).forEach { rowColors ->
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            rowColors.forEach { color ->
-                                Box(Modifier.size(30.dp).background(color, RoundedCornerShape(50)).clickable { customColorHex = String.format("#%06X", 0xFFFFFF and color.toArgb()) }.border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(50)))
-                            }
-                        }
+                    OutlinedTextField(value = customColorHex, onValueChange = { text ->
+                        customColorHex = text
+                        runCatching { FloatArray(3).also { android.graphics.Color.colorToHSV(android.graphics.Color.parseColor(text), it) } }.getOrNull()?.let { hsvColor = it }
+                    }, label = { Text("Color hex") }, singleLine = true)
+                    val hueColor = Color(android.graphics.Color.HSVToColor(floatArrayOf(hsvColor[0], 1f, 1f)))
+                    Canvas(Modifier.fillMaxWidth().height(180.dp)
+                        .pointerInput(hsvColor[0]) { detectTapGestures { updateSv(it, size.width.toFloat(), size.height.toFloat()) } }
+                        .pointerInput(hsvColor[0]) { detectDragGestures(onDragStart = { updateSv(it, size.width.toFloat(), size.height.toFloat()) }) { change, _ -> change.consume(); updateSv(change.position, size.width.toFloat(), size.height.toFloat()) } }) {
+                        drawRect(Brush.horizontalGradient(listOf(Color.White, hueColor)))
+                        drawRect(Brush.verticalGradient(listOf(Color.Transparent, Color.Black)))
+                        val marker = Offset(hsvColor[1] * size.width, (1f - hsvColor[2]) * size.height)
+                        drawCircle(Color.White, 8.dp.toPx(), marker, style = Stroke(2.dp.toPx()))
+                        drawCircle(Color.Black, 9.dp.toPx(), marker, style = Stroke(1.dp.toPx()))
                     }
+                    Text("Hue", style = MaterialTheme.typography.labelMedium)
+                    Slider(value=hsvColor[0], onValueChange={ hue -> hsvColor=hsvColor.copyOf().also { it[0]=hue }; customColorHex=String.format("#%06X",0xFFFFFF and android.graphics.Color.HSVToColor(hsvColor)) }, valueRange=0f..360f)
                 }
             },
             confirmButton = {
