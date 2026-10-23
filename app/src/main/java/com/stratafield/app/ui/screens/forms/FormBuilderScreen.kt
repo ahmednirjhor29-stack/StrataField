@@ -475,6 +475,7 @@ internal fun FormFillScreen(
     val templateFields = remember(template) { viewModel.parseFields(template.fieldsJson) }
     var extraFields by rememberSaveable(stateSaver = ExtraFieldsSaver) { mutableStateOf(emptyList()) }
     val formData = rememberSaveable(saver = FormDataSaver) { mutableStateMapOf() }
+    val defaultSurveyorName by SurveyorPreferences.surveyorName(context).collectAsState()
     var showDrawing by rememberSaveable { mutableStateOf(false) }
     var showGraphPaper by rememberSaveable { mutableStateOf(false) }
     var showImagePicker by rememberSaveable { mutableStateOf(false) }
@@ -483,6 +484,12 @@ internal fun FormFillScreen(
     var showCompleteConfirm by rememberSaveable { mutableStateOf(false) }
     var activeFieldId by rememberSaveable { mutableStateOf<String?>(null) }
     val allFields = templateFields + extraFields
+    LaunchedEffect(template.id, defaultSurveyorName) {
+        val surveyorFieldId = allFields.firstOrNull { it.id == "surveyor_name" }?.id
+        if (defaultSurveyorName.isNotBlank() && surveyorFieldId != null && formData[surveyorFieldId].isNullOrBlank()) {
+            formData[surveyorFieldId] = defaultSurveyorName
+        }
+    }
     val darkMode = MaterialTheme.colorScheme.background.luminance() < 0.5f
     val sectionBackgrounds = if (darkMode) listOf(
         Color(0xFF202B27), Color(0xFF222A36), Color(0xFF30291F), Color(0xFF2D2532),

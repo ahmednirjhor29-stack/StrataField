@@ -29,6 +29,7 @@ fun SettingsScreen(
 ) {
     val context = LocalContext.current
     val darkMode by ThemePreferences.isDarkMode(context).collectAsState()
+    var surveyorName by remember { mutableStateOf(SurveyorPreferences.getName(context)) }
     var autoSync by remember { mutableStateOf(true) }
     var highQualityImages by remember { mutableStateOf(true) }
     var showAboutDialog by remember { mutableStateOf(false) }
@@ -93,6 +94,30 @@ fun SettingsScreen(
                         checked = highQualityImages,
                         onCheckedChange = { highQualityImages = it }
                     )
+                }
+            }
+
+            item {
+                SettingsSection("Field Work") {
+                    Text(
+                        "Prefills the surveyor name in forms going forward. Previously saved form data is unchanged.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = surveyorName,
+                        onValueChange = { surveyorName = it },
+                        label = { Text("Default surveyor name") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Button(
+                        onClick = {
+                            SurveyorPreferences.setName(context, surveyorName)
+                            Toast.makeText(context, "Default surveyor name saved", Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier.align(Alignment.End)
+                    ) { Text("Save name") }
                 }
             }
 
