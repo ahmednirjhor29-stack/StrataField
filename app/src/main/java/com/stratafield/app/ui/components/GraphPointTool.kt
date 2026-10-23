@@ -70,6 +70,8 @@ private data class GraphSnapshot(val points: List<GraphPoint>, val connections: 
 private const val GRID_DP = 28f
 private const val HIT_RADIUS_PX = 45f
 
+private fun ratioFieldText(value: Float): String = value.toString().removeSuffix(".0")
+
 @Composable
 fun GraphPointTool(
     modifier: Modifier = Modifier,
@@ -80,8 +82,8 @@ fun GraphPointTool(
     val density = LocalDensity.current.density
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
-    var scaleRatioText by remember { mutableStateOf(if (initialData.scaleRatio == 1f) "1" else initialData.scaleRatio.toString()) }
-    var ratioInput by remember { mutableStateOf(if (initialData.scaleRatio == 1f) "1" else initialData.scaleRatio.toString()) }
+    var scaleRatioText by remember { mutableStateOf(ratioFieldText(initialData.scaleRatio)) }
+    var ratioInput by remember { mutableStateOf(ratioFieldText(initialData.scaleRatio)) }
     var squareUnit by remember { mutableStateOf(initialData.squareUnit.ifBlank { "cm" }) }
     var points by remember { mutableStateOf(initialData.points) }
     var connections by remember { mutableStateOf(initialData.connections) }
@@ -154,21 +156,20 @@ fun GraphPointTool(
         xInput=xInput.toFloatOrNull()?.let { (it*factor).toString() } ?: xInput
         yInput=yInput.toFloatOrNull()?.let { (it*factor).toString() } ?: yInput
         scaleRatioText=newRatio.toString()
-        ratioInput=newRatio.toString()
         pushData()
     }
     fun undo() {
         val previous = history.removeLastOrNull() ?: return
         redoHistory.add(snapshot())
         points = previous.points; connections = previous.connections; inkStrokes = previous.inkStrokes
-        scaleRatioText=previous.scaleRatio; ratioInput=previous.scaleRatio; squareUnit=previous.unit; anchor=previous.anchor
+        scaleRatioText=previous.scaleRatio; ratioInput=previous.scaleRatio.toFloatOrNull()?.let(::ratioFieldText) ?: previous.scaleRatio; squareUnit=previous.unit; anchor=previous.anchor
         selectedPointId = null; pushData()
     }
     fun redo() {
         val next = redoHistory.removeLastOrNull() ?: return
         history.add(snapshot())
         points = next.points; connections = next.connections; inkStrokes = next.inkStrokes
-        scaleRatioText=next.scaleRatio; ratioInput=next.scaleRatio; squareUnit=next.unit; anchor=next.anchor
+        scaleRatioText=next.scaleRatio; ratioInput=next.scaleRatio.toFloatOrNull()?.let(::ratioFieldText) ?: next.scaleRatio; squareUnit=next.unit; anchor=next.anchor
         selectedPointId = null; pushData()
     }
 
@@ -223,7 +224,7 @@ fun GraphPointTool(
                                 focusManager.clearFocus()
                                 keyboardController?.hide()
                             }),
-                            modifier=Modifier.width(56.dp).height(40.dp).zIndex(1f)
+                            modifier=Modifier.width(72.dp).height(40.dp).zIndex(1f)
                         )
                     }
                     RibbonToolButton(Icons.Filled.Straighten, "Units", true, Modifier.weight(1f)) { showUnitDialog = true }
