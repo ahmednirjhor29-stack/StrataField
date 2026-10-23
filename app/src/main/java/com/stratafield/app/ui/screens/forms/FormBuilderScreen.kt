@@ -1183,6 +1183,7 @@ private fun FormFieldInput(
 private data class SurveyLocationData(
     val crs: String = "EPSG:4326",
     val siteName: String = "",
+    val descriptiveLocation: String = "",
     val latitude: Double? = null,
     val longitude: Double? = null,
     val gnssElevation: Double? = null,
@@ -1257,6 +1258,17 @@ private fun SurveyLocationField(
             singleLine = true,
             modifier = Modifier.fillMaxWidth()
         )
+        if (fieldId == "survey_location") {
+            OutlinedTextField(
+                value = location.descriptiveLocation,
+                onValueChange = { save(location.copy(descriptiveLocation = it)) },
+                label = { Text("Descriptive Location") },
+                placeholder = { Text("Describe where the site is located") },
+                modifier = Modifier.fillMaxWidth(),
+                minLines = 2,
+                maxLines = 4
+            )
+        }
         if (location.crs == "EPSG:4326") Box {
             OutlinedButton(onClick={formatExpanded=true}, modifier=Modifier.fillMaxWidth()) { Text("Coordinate format: $coordinateFormat", modifier=Modifier.weight(1f)); Icon(Icons.Filled.ArrowDropDown, null) }
             DropdownMenu(expanded=formatExpanded,onDismissRequest={formatExpanded=false}) {
