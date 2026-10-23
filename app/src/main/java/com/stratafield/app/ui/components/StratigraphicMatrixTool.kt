@@ -152,10 +152,10 @@ fun StratigraphicMatrixTool(modifier: Modifier = Modifier, initialValue: String 
                     Canvas(Modifier.fillMaxSize()) {
                         matrix.connections.forEach { pair ->
                             if(pair.size==2 && pair.all { it in grid.indices && grid[it]!=MATRIX_HOLE }) {
-                                val route=routes[pair].orEmpty().map { Offset(it.x*density,it.y*density) }
+                                val route=orthogonalizeRoute(routes[pair].orEmpty().map { Offset(it.x*density,it.y*density) })
                                 if(route.size>=2) {
                                     val path=Path().apply { moveTo(route.first().x,route.first().y); route.drop(1).forEach { lineTo(it.x,it.y) } }
-                                    drawPath(path,lineColor,style=androidx.compose.ui.graphics.drawscope.Stroke(width=2.dp.toPx()))
+                                    drawPath(path,lineColor,style=androidx.compose.ui.graphics.drawscope.Stroke(width=2.dp.toPx(),cap=androidx.compose.ui.graphics.StrokeCap.Butt,join=androidx.compose.ui.graphics.StrokeJoin.Miter))
                                 }
                             }
                         }
@@ -205,6 +205,20 @@ fun StratigraphicMatrixTool(modifier: Modifier = Modifier, initialValue: String 
             val cells=grid.toMutableList(); cells[index]=editText; commit(matrix.copy(cells=cells)); editCell=null
         }) { Text("Save") }},dismissButton={TextButton(onClick={editCell=null}) { Text("Cancel") }})
     }
+}
+
+/** Inserts an elbow wherever a route segment is diagonal, so every connector is strictly Manhattan. */
+private fun orthogonalizeRoute(route: List<Offset>): List<Offset> {
+    if(route.size<2) return route
+    val result=ArrayList<Offset>(route.size*2)
+    result.add(route.first())
+    for(next in route.drop(1)) {
+        val previous=result.last()
+        val dx=next.x-previous.x; val dy=next.y-previous.y
+        if(kotlin.math.abs(dx)>0.01f && kotlin.math.abs(dy)>0.01f) result.add(Offset(next.x,previous.y))
+        if(kotlin.math.abs(next.x-result.last().x)>0.01f || kotlin.math.abs(next.y-result.last().y)>0.01f) result.add(next)
+    }
+    return result
 }
 
 @Composable
