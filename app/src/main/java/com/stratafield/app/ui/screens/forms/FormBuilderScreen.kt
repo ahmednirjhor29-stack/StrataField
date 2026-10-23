@@ -468,13 +468,24 @@ internal fun FormFillScreen(
     template: FormTemplate,
     projectId: Long,
     onDismiss: () -> Unit,
-    viewModel: StrataFieldViewModel
+    viewModel: StrataFieldViewModel,
+    responseToEdit: FormResponse? = null
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val templateFields = remember(template) { viewModel.parseFields(template.fieldsJson) }
-    var extraFields by rememberSaveable(stateSaver = ExtraFieldsSaver) { mutableStateOf(emptyList()) }
-    val formData = rememberSaveable(saver = FormDataSaver) { mutableStateMapOf() }
+    val originalData = remember(responseToEdit?.id) {
+        responseToEdit?.let { viewModel.parseResponseData(it.dataJson) }.orEmpty()
+    }
+    var extraFields by rememberSaveable(responseToEdit?.id, stateSaver = ExtraFieldsSaver) {
+        val knownIds = templateFields.mapTo(mutableSetOf()) { it.id }
+        mutableStateOf(originalData.keys.filterNot { it in knownIds }.map { id ->
+            FormFieldDefinition(id, id, FieldType.TEXTAREA, section = "Additional Fields")
+        })
+    }
+    val formData = rememberSaveable(responseToEdit?.id, saver = FormDataSaver) {
+        mutableStateMapOf<String, String>().apply { putAll(originalData) }
+    }
     val projectDetails by viewModel.currentProject.collectAsState()
     val projectName = projectDetails?.takeIf { it.project.id == projectId }?.project?.name.orEmpty()
     val defaultSurveyorName by SurveyorPreferences.surveyorName(context).collectAsState()
@@ -486,7 +497,8 @@ internal fun FormFillScreen(
     var showCompleteConfirm by rememberSaveable { mutableStateOf(false) }
     var activeFieldId by rememberSaveable { mutableStateOf<String?>(null) }
     val allFields = templateFields + extraFields
-    LaunchedEffect(template.id, defaultSurveyorName, projectName) {
+    LaunchedEffect(template.id, defaultSurveyorName, projectName, responseToEdit?.id) {
+        if (responseToEdit != null) return@LaunchedEffect
         val surveyorFieldId = allFields.firstOrNull { it.id == "surveyor_name" }?.id
         if (defaultSurveyorName.isNotBlank() && surveyorFieldId != null && formData[surveyorFieldId].isNullOrBlank()) {
             formData[surveyorFieldId] = defaultSurveyorName
@@ -501,7 +513,34 @@ internal fun FormFillScreen(
         val siteName = locationField?.let { parseLocation(formData[it.id].orEmpty()).siteName.orEmpty().trim() }.orEmpty()
         val date = allFields.firstOrNull { it.fieldType == FieldType.DATE }
             ?.let { formData[it.id].orEmpty().trim() }.orEmpty()
-        return listOf(siteName, date).filter(String::isNotBlank).joinToString(" - ").ifBlank { template.name }
+        return listOf(siteName, date).filter(String::isNotBlank).joinToString(" - ")
+            .ifBlank { responseToEdit?.formName ?: template.name }
+    }
+    suspend fun saveForm(status: DataStatus) {
+        val values = formData.toMap()
+        val name = responseFormName()
+        if (responseToEdit == null) {
+            viewModel.saveFormResponse(
+                projectId = projectId,
+                surveyId = null,
+                siteId = null,
+                trenchId = null,
+                templateId = template.id,
+                formName = name,
+                formType = template.formType,
+                data = values,
+                status = status
+            )
+        } else {
+            viewModel.updateFormResponse(
+                responseToEdit.copy(
+                    formName = name,
+                    dataJson = viewModel.serializeResponseData(values),
+                    status = status,
+                    submittedAt = if (status == DataStatus.DRAFT) null else responseToEdit.submittedAt ?: System.currentTimeMillis()
+                )
+            )
+        }
     }
     val darkMode = MaterialTheme.colorScheme.background.luminance() < 0.5f
     val sectionBackgrounds = if (darkMode) listOf(
@@ -514,7 +553,7 @@ internal fun FormFillScreen(
     Scaffold(
         containerColor = MaterialTheme.colorScheme.surface,
         topBar = {
-            StrataTopBar(title = template.name, onBack = onDismiss)
+            StrataTopBar(title = if (responseToEdit == null) template.name else "Edit ${responseToEdit.formName}", onBack = onDismiss)
         },
         bottomBar = {
             Surface(
@@ -527,38 +566,48 @@ internal fun FormFillScreen(
                         .padding(16.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    OutlinedButton(
-                        onClick = {
-                            scope.launch {
-                                viewModel.saveFormResponse(
-                                    projectId = projectId,
-                                    surveyId = null,
-                                    siteId = null,
-                                    trenchId = null,
-                                    templateId = template.id,
-                                    formName = responseFormName(),
-                                    formType = template.formType,
-                                    data = formData.toMap(),
-                                    status = DataStatus.DRAFT
-                                )
-                                Toast.makeText(context, "Saved as draft", Toast.LENGTH_SHORT).show()
-                                onDismiss()
-                            }
-                        },
-                        modifier = Modifier.weight(1f),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.onSurface),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Text("Save Draft")
-                    }
-                    Button(
-                        onClick = { showCompleteConfirm = true },
-                        modifier = Modifier.weight(1f),
-                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary, contentColor = MaterialTheme.colorScheme.onPrimary),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Text("Complete")
+                    if (responseToEdit == null) {
+                        OutlinedButton(
+                            onClick = {
+                                scope.launch {
+                                    saveForm(DataStatus.DRAFT)
+                                    Toast.makeText(context, "Saved as draft", Toast.LENGTH_SHORT).show()
+                                    onDismiss()
+                                }
+                            },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.onSurface),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                            shape = RoundedCornerShape(12.dp)
+                        ) { Text("Save Draft") }
+                        Button(
+                            onClick = { showCompleteConfirm = true },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary, contentColor = MaterialTheme.colorScheme.onPrimary),
+                            shape = RoundedCornerShape(12.dp)
+                        ) { Text("Complete") }
+                    } else {
+                        OutlinedButton(
+                            onClick = {
+                                scope.launch {
+                                    saveForm(responseToEdit.status)
+                                    Toast.makeText(context, "Changes saved", Toast.LENGTH_SHORT).show()
+                                    onDismiss()
+                                }
+                            },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.onSurface),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                            shape = RoundedCornerShape(12.dp)
+                        ) { Text("Save Changes") }
+                        if (responseToEdit.status == DataStatus.DRAFT) {
+                            Button(
+                                onClick = { showCompleteConfirm = true },
+                                modifier = Modifier.weight(1f),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary, contentColor = MaterialTheme.colorScheme.onPrimary),
+                                shape = RoundedCornerShape(12.dp)
+                            ) { Text("Complete") }
+                        }
                     }
                 }
             }
@@ -593,6 +642,7 @@ internal fun FormFillScreen(
                         field = field,
                         value = formData[field.id] ?: "",
                         onValueChange = { formData[field.id] = it },
+                        autoFillDate = responseToEdit == null,
                         onOpenCalculator = {},
                         onOpenDrawing = { activeFieldId = field.id; showDrawing = true },
                         onOpenGraphPaper = { activeFieldId = field.id; showGraphPaper = true },
@@ -665,18 +715,8 @@ internal fun FormFillScreen(
                     onClick = {
                         showCompleteConfirm = false
                         scope.launch {
-                            viewModel.saveFormResponse(
-                                projectId = projectId,
-                                surveyId = null,
-                                siteId = null,
-                                trenchId = null,
-                                templateId = template.id,
-                                formName = responseFormName(),
-                                formType = template.formType,
-                                data = formData.toMap(),
-                                status = DataStatus.COMPLETE
-                            )
-                            Toast.makeText(context, "Form completed", Toast.LENGTH_SHORT).show()
+                            saveForm(DataStatus.COMPLETE)
+                            Toast.makeText(context, if (responseToEdit == null) "Form completed" else "Form updated and completed", Toast.LENGTH_SHORT).show()
                             onDismiss()
                         }
                     },
@@ -803,6 +843,7 @@ private fun FormFieldInput(
     onOpenGraphPaper: () -> Unit = onOpenDrawing,
     onOpenImagePicker: () -> Unit,
     onOpenMatrix: () -> Unit = {},
+    autoFillDate: Boolean = true,
     onDelete: (() -> Unit)? = null
 ) {
     Card(
@@ -895,7 +936,7 @@ private fun FormFieldInput(
                     var showDatePicker by remember { mutableStateOf(false) }
                     val dateFormatter = remember { SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()) }
                     LaunchedEffect(field.id) {
-                        if (value.isBlank()) onValueChange(dateFormatter.format(Date()))
+                        if (autoFillDate && value.isBlank()) onValueChange(dateFormatter.format(Date()))
                     }
                     OutlinedTextField(
                         value = value,

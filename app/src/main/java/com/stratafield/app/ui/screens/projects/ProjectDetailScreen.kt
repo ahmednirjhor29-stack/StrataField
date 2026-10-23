@@ -58,6 +58,7 @@ fun ProjectDetailScreen(
     var showExportDialog by remember { mutableStateOf(false) }
     var exporting by remember { mutableStateOf(false) }
     var activeFormTemplate by remember { mutableStateOf<FormTemplate?>(null) }
+    var editingFormResponse by remember { mutableStateOf<FormResponse?>(null) }
     var activeResponse by remember { mutableStateOf<FormResponse?>(null) }
 
     LaunchedEffect(projectId) {
@@ -89,12 +90,14 @@ fun ProjectDetailScreen(
                         when (selectedTab) {
                             1 -> if (surveySubTab == 0) {
                                 scope.launch {
+                                    editingFormResponse = null
                                     activeFormTemplate = viewModel.getOrCreateProjectFormTemplate(FormType.SURVEY)
                                 }
                             } else {
                                 showNewSite = true
                             }
                             2 -> scope.launch {
+                                editingFormResponse = null
                                 activeFormTemplate = viewModel.getOrCreateProjectFormTemplate(FormType.TRENCH)
                             }
                         }
@@ -164,16 +167,31 @@ fun ProjectDetailScreen(
                     surveyResponses = surveyResponses,
                     sites = sites,
                     onAddSite = { showNewSite = true },
-                    onResponseClick = { activeResponse = it }
+                    onResponseClick = { activeResponse = it },
+                    onResponseEdit = { response ->
+                        scope.launch {
+                            val template = viewModel.getFormTemplateForResponse(response)
+                            if (template == null) Toast.makeText(context, "This form has no editable fields", Toast.LENGTH_SHORT).show()
+                            else { editingFormResponse = response; activeFormTemplate = template }
+                        }
+                    }
                 )
                 2 -> FormsTab(
                     responses = excavationResponses,
                     onAdd = {
                         scope.launch {
+                            editingFormResponse = null
                             activeFormTemplate = viewModel.getOrCreateProjectFormTemplate(FormType.TRENCH)
                         }
                     },
-                    onResponseClick = { activeResponse = it }
+                    onResponseClick = { activeResponse = it },
+                    onResponseEdit = { response ->
+                        scope.launch {
+                            val template = viewModel.getFormTemplateForResponse(response)
+                            if (template == null) Toast.makeText(context, "This form has no editable fields", Toast.LENGTH_SHORT).show()
+                            else { editingFormResponse = response; activeFormTemplate = template }
+                        }
+                    }
                 )
             }
         }
@@ -185,9 +203,11 @@ fun ProjectDetailScreen(
             projectId = projectId,
             onDismiss = {
                 activeFormTemplate = null
+                editingFormResponse = null
                 viewModel.loadProjectDetail(projectId)
             },
-            viewModel = viewModel
+            viewModel = viewModel,
+            responseToEdit = editingFormResponse
         )
     }
 
@@ -633,7 +653,8 @@ private fun SurveyTab(
     surveyResponses: List<FormResponse>,
     sites: List<Site>,
     onAddSite: () -> Unit,
-    onResponseClick: (FormResponse) -> Unit
+    onResponseClick: (FormResponse) -> Unit,
+    onResponseEdit: (FormResponse) -> Unit
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
@@ -659,7 +680,7 @@ private fun SurveyTab(
         }
 
         if (subTab == 0) {
-            FormsTab(responses = surveyResponses, onAdd = {}, onResponseClick = onResponseClick)
+            FormsTab(responses = surveyResponses, onAdd = {}, onResponseClick = onResponseClick, onResponseEdit = onResponseEdit)
         } else {
             SitesTab(sites = sites, onAdd = onAddSite)
         }
@@ -806,7 +827,8 @@ private fun TrenchesTab(
 private fun FormsTab(
     responses: List<FormResponse>,
     onAdd: () -> Unit,
-    onResponseClick: (FormResponse) -> Unit = {}
+    onResponseClick: (FormResponse) -> Unit = {},
+    onResponseEdit: (FormResponse) -> Unit = {}
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -841,7 +863,14 @@ private fun FormsTab(
                                 fontWeight = FontWeight.SemiBold,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
-                            StatusBadge(response.status.name)
+                            Column(horizontalAlignment = Alignment.End) {
+                                StatusBadge(response.status.name)
+                                if (response.status == DataStatus.DRAFT || response.status == DataStatus.COMPLETE) {
+                                    TextButton(onClick = { onResponseEdit(response) }, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)) {
+                                        Text("Edit")
+                                    }
+                                }
+                            }
                         }
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(

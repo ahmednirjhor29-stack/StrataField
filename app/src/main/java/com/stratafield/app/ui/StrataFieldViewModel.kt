@@ -219,6 +219,22 @@ class StrataFieldViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
+    suspend fun getFormTemplate(id: Long): FormTemplate? = repository.getTemplateOnce(id)
+
+    suspend fun getFormTemplateForResponse(response: FormResponse): FormTemplate? {
+        response.templateId?.let { repository.getTemplateOnce(it)?.let { template -> return template } }
+        val savedFields = parseResponseData(response.dataJson).keys.map { fieldId ->
+            FormFieldDefinition(fieldId, fieldId, FieldType.TEXTAREA, section = "Saved Fields")
+        }
+        if (savedFields.isEmpty()) return null
+        return FormTemplate(
+            id = response.templateId ?: 0L,
+            name = response.formName,
+            formType = response.formType,
+            fieldsJson = com.google.gson.Gson().toJson(savedFields)
+        )
+    }
+
     suspend fun getOrCreateProjectFormTemplate(formType: FormType): FormTemplate {
         val name = when (formType) {
             FormType.SURVEY -> "Survey Data Form"

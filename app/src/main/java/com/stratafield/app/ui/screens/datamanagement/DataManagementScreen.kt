@@ -1,5 +1,6 @@
 package com.stratafield.app.ui.screens.datamanagement
 
+import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -12,12 +13,14 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.stratafield.app.data.model.*
 import com.stratafield.app.ui.StrataFieldViewModel
 import com.stratafield.app.ui.components.*
+import com.stratafield.app.ui.screens.forms.FormFillScreen
 import com.stratafield.app.ui.theme.*
 import kotlinx.coroutines.launch
 
@@ -25,6 +28,7 @@ import kotlinx.coroutines.launch
 fun DataManagementScreen(
     viewModel: StrataFieldViewModel = viewModel()
 ) {
+    val context = LocalContext.current
     val projects by viewModel.projects.collectAsState()
     val responses by viewModel.projectResponses.collectAsState()
 
@@ -35,6 +39,8 @@ fun DataManagementScreen(
     var statusFilter by remember { mutableStateOf<DataStatus?>(null) }
     var typeFilter by remember { mutableStateOf<FormType?>(null) }
     var activeResponse by remember { mutableStateOf<FormResponse?>(null) }
+    var editingResponse by remember { mutableStateOf<FormResponse?>(null) }
+    var editingTemplate by remember { mutableStateOf<FormTemplate?>(null) }
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(Unit) {
@@ -271,7 +277,22 @@ fun DataManagementScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 items(filteredResponses) { response ->
-                    DataRecordCard(response, onClick = { activeResponse = response })
+                    DataRecordCard(
+                        response,
+                        onClick = { activeResponse = response },
+                        onEdit = {
+                            scope.launch {
+                                val template = viewModel.getFormTemplateForResponse(response)
+                                if (template == null) {
+                                    Toast.makeText(context, "This form has no editable fields", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    activeResponse = null
+                                    editingResponse = response
+                                    editingTemplate = template
+                                }
+                            }
+                        }
+                    )
                 }
             }
         }
@@ -296,10 +317,26 @@ fun DataManagementScreen(
             }
         )
     }
+
+    val responseBeingEdited = editingResponse
+    val templateBeingEdited = editingTemplate
+    if (responseBeingEdited != null && templateBeingEdited != null) {
+        FormFillScreen(
+            template = templateBeingEdited,
+            projectId = responseBeingEdited.projectId,
+            responseToEdit = responseBeingEdited,
+            viewModel = viewModel,
+            onDismiss = {
+                editingResponse = null
+                editingTemplate = null
+                viewModel.loadProjectDetail(responseBeingEdited.projectId)
+            }
+        )
+    }
 }
 
 @Composable
-private fun DataRecordCard(response: FormResponse, onClick: () -> Unit) {
+private fun DataRecordCard(response: FormResponse, onClick: () -> Unit, onEdit: () -> Unit) {
     Card(
         onClick = onClick,
         modifier = Modifier.fillMaxWidth(),
@@ -341,7 +378,14 @@ private fun DataRecordCard(response: FormResponse, onClick: () -> Unit) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            StatusBadge(response.status.name)
+            Column(horizontalAlignment = Alignment.End) {
+                StatusBadge(response.status.name)
+                if (response.status == DataStatus.DRAFT || response.status == DataStatus.COMPLETE) {
+                    TextButton(onClick = onEdit, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)) {
+                        Text("Edit")
+                    }
+                }
+            }
         }
     }
 }
