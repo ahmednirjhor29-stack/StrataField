@@ -115,8 +115,6 @@ fun GraphPointTool(
 
     var zoom by remember { mutableStateOf(1f) }
     var panOffset by remember { mutableStateOf(Offset.Zero) }
-    var rotation by remember { mutableStateOf(0f) }
-    var rotationLocked by remember { mutableStateOf(false) }
     // Anchor is stored in graph units so it remains attached to the paper while the view moves.
     var anchor by remember { mutableStateOf(Offset.Zero) }
     var northArrow by remember { mutableStateOf(Offset(0f, -1f)) }
@@ -192,7 +190,6 @@ fun GraphPointTool(
             Text("Graph Paper", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
             IconButton(onClick = ::undo, enabled = history.isNotEmpty()) { Icon(Icons.Filled.Undo, contentDescription = "Undo") }
             IconButton(onClick = ::redo, enabled = redoHistory.isNotEmpty()) { Icon(Icons.Filled.Redo, contentDescription = "Redo") }
-            IconButton(onClick = { rotationLocked = !rotationLocked }, modifier=Modifier.size(36.dp)) { Icon(if(rotationLocked) Icons.Filled.Lock else Icons.Filled.LockOpen, contentDescription = if(rotationLocked) "Unlock rotation" else "Lock rotation", tint=if(rotationLocked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface, modifier=Modifier.size(17.dp)) }
             Spacer(Modifier.weight(1f))
             IconButton(onClick = onClose) { Icon(Icons.Filled.Close, contentDescription = "Close graph paper") }
         }
@@ -213,7 +210,7 @@ fun GraphPointTool(
                     RibbonToolButton(Icons.Filled.MyLocation, "Anchor", true, Modifier.weight(1f), anchorMode) { anchorMode=!anchorMode; northMode=false }
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                    RibbonToolButton(Icons.Filled.CenterFocusStrong, "Center", true, Modifier.weight(1f)) { val g=GRID_DP*density*zoom; val ratio=scaleRatioText.toFloatOrNull()?.takeIf { it>0f }?:1f; panOffset=-rotateVector(Offset(anchor.x/ratio*g,-anchor.y/ratio*g),rotation) }
+                    RibbonToolButton(Icons.Filled.CenterFocusStrong, "Center", true, Modifier.weight(1f)) { val g=GRID_DP*density*zoom; val ratio=scaleRatioText.toFloatOrNull()?.takeIf { it>0f }?:1f; panOffset=Offset(-anchor.x/ratio*g,anchor.y/ratio*g) }
                     Row(Modifier.weight(3f).height(40.dp).zIndex(1f), verticalAlignment=Alignment.CenterVertically, horizontalArrangement=Arrangement.Center) {
                         val ratioTextStyle = MaterialTheme.typography.labelLarge.copy(color=MaterialTheme.colorScheme.onSurface)
                         val ratioKeyboard = KeyboardOptions(keyboardType=androidx.compose.ui.text.input.KeyboardType.Decimal, imeAction=androidx.compose.ui.text.input.ImeAction.Done)
@@ -272,26 +269,21 @@ fun GraphPointTool(
             Canvas(
                 modifier = Modifier
                     .fillMaxSize()
-                    .pointerInput(connectMode, pointEditMode, eraserMode, anchorMode, northMode, rotationLocked) {
-                        detectTransformGestures { centroid, pan, gestureZoom, gestureRotation ->
+                    .pointerInput(connectMode, pointEditMode, eraserMode, anchorMode, northMode) {
+                        detectTransformGestures { centroid, pan, gestureZoom, _ ->
                             if(anchorMode || northMode) return@detectTransformGestures
                             val oldZoom=zoom; val newZoom=(oldZoom*gestureZoom).coerceIn(0.12f,12f)
                             val center=Offset(size.width/2f,size.height/2f)
-                            val oldAngle=rotation
-                            val hasTwoFingerTwist=kotlin.math.abs(gestureRotation)>0.15f
-                            val nextAngle=if(rotationLocked || !hasTwoFingerTwist) oldAngle else snapGraphAngle(oldAngle+gestureRotation)
-                            val centroidLocal=rotateVector(centroid-center,-oldAngle)
+                            val centroidLocal=centroid-center
                             val worldAtCentroid=centroidLocal-panOffset
-                            val panLocal=rotateVector(pan,-nextAngle)
-                            panOffset=centroidLocal-worldAtCentroid*(newZoom/oldZoom)+panLocal
+                            panOffset=centroidLocal-worldAtCentroid*(newZoom/oldZoom)+pan
                             zoom=newZoom
-                            if(!rotationLocked && hasTwoFingerTwist && gestureRotation.isFinite()) rotation=nextAngle
                         }
                     }
                     .pointerInput(anchorMode, northMode) {
                         if(anchorMode || northMode) detectDragGestures(
-                            onDragStart = { p -> if(anchorMode) anchor=screenToGraph(p,size.width.toFloat(),size.height.toFloat(),panOffset,zoom,rotation,GRID_DP.dp.toPx(),scaleRatioText.toFloatOrNull()?.takeIf { it>0f }?:1f) else { val c=Offset(size.width-48.dp.toPx(),48.dp.toPx()); val d=p-c; val m=hypot(d.x.toDouble(),d.y.toDouble()).toFloat().coerceAtLeast(1f); northArrow=d/m } },
-                            onDrag = { change, _ -> change.consume(); if(anchorMode) anchor=screenToGraph(change.position,size.width.toFloat(),size.height.toFloat(),panOffset,zoom,rotation,GRID_DP.dp.toPx(),scaleRatioText.toFloatOrNull()?.takeIf { it>0f }?:1f) else { val c=Offset(size.width-48.dp.toPx(),48.dp.toPx()); val d=change.position-c; val m=hypot(d.x.toDouble(),d.y.toDouble()).toFloat().coerceAtLeast(1f); northArrow=d/m } }
+                            onDragStart = { p -> if(anchorMode) anchor=screenToGraph(p,size.width.toFloat(),size.height.toFloat(),panOffset,zoom,GRID_DP.dp.toPx(),scaleRatioText.toFloatOrNull()?.takeIf { it>0f }?:1f) else { val c=Offset(size.width-48.dp.toPx(),48.dp.toPx()); val d=p-c; val m=hypot(d.x.toDouble(),d.y.toDouble()).toFloat().coerceAtLeast(1f); northArrow=d/m } },
+                            onDrag = { change, _ -> change.consume(); if(anchorMode) anchor=screenToGraph(change.position,size.width.toFloat(),size.height.toFloat(),panOffset,zoom,GRID_DP.dp.toPx(),scaleRatioText.toFloatOrNull()?.takeIf { it>0f }?:1f) else { val c=Offset(size.width-48.dp.toPx(),48.dp.toPx()); val d=change.position-c; val m=hypot(d.x.toDouble(),d.y.toDouble()).toFloat().coerceAtLeast(1f); northArrow=d/m } }
                         )
                     }
                     .pointerInput(connectMode, pointEditMode, eraserMode, points, zoom, panOffset) {
@@ -448,7 +440,6 @@ fun GraphPointTool(
                 // Clip every label to the drawing surface; negative and positive ticks are generated from visible bounds.
                 drawContext.canvas.nativeCanvas.save()
                 drawContext.canvas.nativeCanvas.clipRect(0f,0f,size.width,size.height)
-                drawContext.canvas.nativeCanvas.rotate(rotation,size.width/2f,size.height/2f)
 
                 fun toPx(p: GraphPoint): Offset =
                     Offset(originX + (p.x / ratio) * gridPx, originY - (p.y / ratio) * gridPx)
@@ -694,25 +685,9 @@ private fun RibbonToolButton(
 private fun formatAxisValue(value: Float): String =
     if (value % 1f == 0f) value.toInt().toString() else String.format(java.util.Locale.US, "%.2f", value)
 
-private fun rotateVector(v: Offset, degrees: Float): Offset {
-    val radians=Math.toRadians(degrees.toDouble()); val c=kotlin.math.cos(radians).toFloat(); val s=kotlin.math.sin(radians).toFloat()
-    return Offset(v.x*c-v.y*s,v.x*s+v.y*c)
-}
-
-private fun snapGraphAngle(angle: Float): Float {
-    val normalized=((angle%360f)+360f)%360f
-    val stops=floatArrayOf(0f,45f,90f,135f,180f,225f,270f,315f,360f)
-    val stop=stops.minBy { kotlin.math.abs((((it-normalized+540f)%360f)-180f)) }
-    val delta=(((stop-normalized+540f)%360f)-180f)
-    val distance=kotlin.math.abs(delta)
-    // Broad attraction zone with a firm snap at the requested compass angles.
-    val result=when { distance<=5.5f -> stop; distance<=13f -> normalized+delta*((13f-distance)/15f); else -> normalized }
-    return ((result%360f)+360f)%360f
-}
-
-private fun screenToGraph(position: Offset,width: Float,height: Float,pan: Offset,zoom: Float,rotation: Float,grid: Float,ratio: Float): Offset {
+private fun screenToGraph(position: Offset,width: Float,height: Float,pan: Offset,zoom: Float,grid: Float,ratio: Float): Offset {
     val center=Offset(width/2f,height/2f)
-    val local=rotateVector(position-center,-rotation)-pan
+    val local=position-center-pan
     val pixelsPerSquare=grid*zoom
     return Offset(local.x/pixelsPerSquare*ratio,-local.y/pixelsPerSquare*ratio)
 }
