@@ -11,6 +11,8 @@ import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.zIndex
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -27,6 +29,8 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -74,6 +78,8 @@ fun GraphPointTool(
     onDataChange: (GraphPaperData) -> Unit = {}
 ) {
     val density = LocalDensity.current.density
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     var scaleRatioText by remember { mutableStateOf(if (initialData.scaleRatio == 1f) "1" else initialData.scaleRatio.toString()) }
     var ratioInput by remember { mutableStateOf(if (initialData.scaleRatio == 1f) "1" else initialData.scaleRatio.toString()) }
     var squareUnit by remember { mutableStateOf(initialData.squareUnit.ifBlank { "cm" }) }
@@ -200,7 +206,7 @@ fun GraphPointTool(
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                     RibbonToolButton(Icons.Filled.CenterFocusStrong, "Center", true, Modifier.weight(1f)) { val g=GRID_DP*density*zoom; val ratio=scaleRatioText.toFloatOrNull()?.takeIf { it>0f }?:1f; panOffset=-rotateVector(Offset(anchor.x/ratio*g,-anchor.y/ratio*g),rotation) }
-                    Row(Modifier.weight(2f).height(40.dp), verticalAlignment=Alignment.CenterVertically, horizontalArrangement=Arrangement.Center) {
+                    Row(Modifier.weight(2f).height(40.dp).zIndex(1f), verticalAlignment=Alignment.CenterVertically, horizontalArrangement=Arrangement.Center) {
                         Text("1:", style=MaterialTheme.typography.labelLarge, color=MaterialTheme.colorScheme.onSurface)
                         Spacer(Modifier.width(4.dp))
                         OutlinedTextField(
@@ -211,9 +217,13 @@ fun GraphPointTool(
                                 if(ratio!=null) changeScaleRatio(ratio)
                             },
                             singleLine=true,
-                            textStyle=MaterialTheme.typography.labelLarge,
-                            keyboardOptions=KeyboardOptions(keyboardType=androidx.compose.ui.text.input.KeyboardType.Decimal),
-                            modifier=Modifier.width(48.dp).height(40.dp)
+                            textStyle=MaterialTheme.typography.labelLarge.copy(color=MaterialTheme.colorScheme.onSurface),
+                            keyboardOptions=KeyboardOptions(keyboardType=androidx.compose.ui.text.input.KeyboardType.Decimal, imeAction=androidx.compose.ui.text.input.ImeAction.Done),
+                            keyboardActions=KeyboardActions(onDone={
+                                focusManager.clearFocus()
+                                keyboardController?.hide()
+                            }),
+                            modifier=Modifier.width(56.dp).height(40.dp).zIndex(1f)
                         )
                     }
                     RibbonToolButton(Icons.Filled.Straighten, "Units", true, Modifier.weight(1f)) { showUnitDialog = true }
