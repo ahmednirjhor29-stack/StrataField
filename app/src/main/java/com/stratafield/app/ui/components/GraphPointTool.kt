@@ -24,9 +24,11 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -73,6 +75,7 @@ fun GraphPointTool(
     onClose: () -> Unit = {},
     onDataChange: (GraphPaperData) -> Unit = {}
 ) {
+    val density = LocalDensity.current.density
     var scaleRatioText by remember { mutableStateOf(if (initialData.scaleRatio == 1f) "1" else initialData.scaleRatio.toString()) }
     var squareUnit by remember { mutableStateOf(initialData.squareUnit.ifBlank { "cm" }) }
     var points by remember { mutableStateOf(initialData.points) }
@@ -103,6 +106,7 @@ fun GraphPointTool(
     var panOffset by remember { mutableStateOf(Offset.Zero) }
     var rotation by remember { mutableStateOf(0f) }
     var rotationLocked by remember { mutableStateOf(false) }
+    // Anchor is stored in graph units so it remains attached to the paper while the view moves.
     var anchor by remember { mutableStateOf(Offset.Zero) }
     var northArrow by remember { mutableStateOf(Offset(0f, -1f)) }
     var anchorMode by remember { mutableStateOf(false) }
@@ -140,7 +144,7 @@ fun GraphPointTool(
             Text("Graph Paper", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
             IconButton(onClick = ::undo, enabled = history.isNotEmpty()) { Icon(Icons.Filled.Undo, contentDescription = "Undo") }
             IconButton(onClick = ::redo, enabled = redoHistory.isNotEmpty()) { Icon(Icons.Filled.Redo, contentDescription = "Redo") }
-            IconButton(onClick = { rotationLocked = !rotationLocked }) { Icon(Icons.Filled.Lock, contentDescription = if(rotationLocked) "Unlock rotation" else "Lock rotation", tint=if(rotationLocked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface) }
+            IconButton(onClick = { rotationLocked = !rotationLocked }, modifier=Modifier.size(36.dp)) { Icon(if(rotationLocked) Icons.Filled.Lock else Icons.Filled.LockOpen, contentDescription = if(rotationLocked) "Unlock rotation" else "Lock rotation", tint=if(rotationLocked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface, modifier=Modifier.size(17.dp)) }
             Spacer(Modifier.weight(1f))
             IconButton(onClick = onClose) { Icon(Icons.Filled.Close, contentDescription = "Close graph paper") }
         }
@@ -157,13 +161,14 @@ fun GraphPointTool(
                     }
                     RibbonToolButton(Icons.Filled.Delete, "Del point", selectedPointId != null, Modifier.weight(1f)) { selectedPointId?.let { id -> recordUndo(); points = points.filterNot { it.id == id }; connections = connections.filterNot { it.fromId == id || it.toId == id }; selectedPointId = null; pushData() } }
                     RibbonToolButton(Icons.Filled.RemoveRoad, "Del lines", connections.isNotEmpty(), Modifier.weight(1f)) { if (connections.isNotEmpty()) { recordUndo(); connections = emptyList(); pushData() } }
-                    RibbonToolButton(Icons.Filled.Navigation, "North", true, Modifier.weight(1f), northMode) { northMode=!northMode; anchorMode=false }
+                    RibbonToolButton(Icons.Filled.ArrowUpward, "North", true, Modifier.weight(1f), northMode) { northMode=!northMode; anchorMode=false }
                     RibbonToolButton(Icons.Filled.MyLocation, "Anchor", true, Modifier.weight(1f), anchorMode) { anchorMode=!anchorMode; northMode=false }
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                    RibbonToolButton(Icons.Filled.Straighten, "Units", true, Modifier.weight(1f)) { showUnitDialog = true }
-                    RibbonToolButton(Icons.Filled.CenterFocusStrong, "Center", true, Modifier.weight(1f)) { panOffset = -anchor }
                     repeat(2) { Spacer(Modifier.weight(1f)) }
+                    RibbonToolButton(Icons.Filled.Straighten, "Units", true, Modifier.weight(1f)) { showUnitDialog = true }
+                    RibbonToolButton(Icons.Filled.CenterFocusStrong, "Center", true, Modifier.weight(1f)) { val g=GRID_DP*density*zoom; val ratio=scaleRatioText.toFloatOrNull()?.takeIf { it>0f }?:1f; panOffset=-rotateVector(Offset(anchor.x/ratio*g,-anchor.y/ratio*g),rotation) }
+                    repeat(4) { Spacer(Modifier.weight(1f)) }
                 }
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 Row(Modifier.fillMaxWidth().padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -196,23 +201,20 @@ fun GraphPointTool(
                             if(anchorMode || northMode) return@detectTransformGestures
                             val oldZoom=zoom; val newZoom=(oldZoom*gestureZoom).coerceIn(0.12f,12f)
                             val center=Offset(size.width/2f,size.height/2f)
-                            val relative=centroid-center-panOffset
-                            panOffset=centroid-center-relative*(newZoom/oldZoom)+pan
+                            val oldAngle=rotation
+                            val nextAngle=if(rotationLocked) oldAngle else snapGraphAngle(oldAngle+gestureRotation)
+                            val centroidLocal=rotateVector(centroid-center,-oldAngle)
+                            val worldAtCentroid=centroidLocal-panOffset
+                            val panLocal=rotateVector(pan,-nextAngle)
+                            panOffset=centroidLocal-worldAtCentroid*(newZoom/oldZoom)+panLocal
                             zoom=newZoom
-                            if(!rotationLocked && minOf(size.width,size.height)>0 && gestureRotation.isFinite()) {
-                                val raw=rotation+gestureRotation
-                                val targets=listOf(0f,45f,90f,135f,180f,225f,270f,315f,360f)
-                                val normalized=((raw%360f)+360f)%360f
-                                val nearest=targets.minBy { kotlin.math.abs((((it-normalized+540f)%360f)-180f)) }
-                                val distance=kotlin.math.abs((((nearest-normalized+540f)%360f)-180f))
-                                rotation=if(distance<3f) nearest else normalized
-                            }
+                            if(!rotationLocked && gestureRotation.isFinite()) rotation=nextAngle
                         }
                     }
                     .pointerInput(anchorMode, northMode) {
                         if(anchorMode || northMode) detectDragGestures(
-                            onDragStart = { p -> if(anchorMode) anchor=p-Offset(size.width/2f,size.height/2f) else { val c=Offset(size.width-32.dp.toPx(),32.dp.toPx()); val d=p-c; val m=hypot(d.x.toDouble(),d.y.toDouble()).toFloat().coerceAtLeast(1f); northArrow=d/m } },
-                            onDrag = { change, _ -> change.consume(); if(anchorMode) anchor=change.position-Offset(size.width/2f,size.height/2f) else { val c=Offset(size.width-32.dp.toPx(),32.dp.toPx()); val d=change.position-c; val m=hypot(d.x.toDouble(),d.y.toDouble()).toFloat().coerceAtLeast(1f); northArrow=d/m } }
+                            onDragStart = { p -> if(anchorMode) anchor=screenToGraph(p,size.width.toFloat(),size.height.toFloat(),panOffset,zoom,rotation,GRID_DP.dp.toPx(),scaleRatioText.toFloatOrNull()?.takeIf { it>0f }?:1f) else { val c=Offset(size.width-48.dp.toPx(),48.dp.toPx()); val d=p-c; val m=hypot(d.x.toDouble(),d.y.toDouble()).toFloat().coerceAtLeast(1f); northArrow=d/m } },
+                            onDrag = { change, _ -> change.consume(); if(anchorMode) anchor=screenToGraph(change.position,size.width.toFloat(),size.height.toFloat(),panOffset,zoom,rotation,GRID_DP.dp.toPx(),scaleRatioText.toFloatOrNull()?.takeIf { it>0f }?:1f) else { val c=Offset(size.width-48.dp.toPx(),48.dp.toPx()); val d=change.position-c; val m=hypot(d.x.toDouble(),d.y.toDouble()).toFloat().coerceAtLeast(1f); northArrow=d/m } }
                         )
                     }
                     .pointerInput(connectMode, pointEditMode, eraserMode, points, zoom, panOffset) {
@@ -369,6 +371,7 @@ fun GraphPointTool(
                 // Clip every label to the drawing surface; negative and positive ticks are generated from visible bounds.
                 drawContext.canvas.nativeCanvas.save()
                 drawContext.canvas.nativeCanvas.clipRect(0f,0f,size.width,size.height)
+                drawContext.canvas.nativeCanvas.rotate(rotation,size.width/2f,size.height/2f)
 
                 fun toPx(p: GraphPoint): Offset =
                     Offset(originX + (p.x / ratio) * gridPx, originY - (p.y / ratio) * gridPx)
@@ -391,10 +394,11 @@ fun GraphPointTool(
                     val (color, width) = lineStyle(i)
                     drawLine(color, Offset(x, 0f), Offset(x, size.height), width)
                 }
-                val minYIndex = kotlin.math.floor(((0f - originY) / gridPx).toDouble()).toInt()
-                val maxYIndex = kotlin.math.ceil(((size.height - originY) / gridPx).toDouble()).toInt()
+                // y = originY - i*gridPx, so positive and negative tick ranges must be derived in that direction.
+                val minYIndex = kotlin.math.floor(((originY-size.height) / gridPx).toDouble()).toInt()
+                val maxYIndex = kotlin.math.ceil((originY / gridPx).toDouble()).toInt()
                 for (i in minYIndex..maxYIndex) {
-                    val y = originY + i * gridPx
+                    val y = originY - i * gridPx
                     val (color, width) = lineStyle(i)
                     drawLine(color, Offset(0f, y), Offset(size.width, y), width)
                 }
@@ -486,14 +490,19 @@ fun GraphPointTool(
                         drawContext.canvas.nativeCanvas.drawText("(${formatAxisValue(p.x)}, ${formatAxisValue(p.y)})", px.x + 9.dp.toPx(), px.y - 7.dp.toPx(), coordinatePaint)
                     }
                 }
-                val arrowCenter=Offset(size.width-32.dp.toPx(),32.dp.toPx())
-                drawLine(NothingRed,arrowCenter,arrowCenter+northArrow*22.dp.toPx(),4.dp.toPx())
-                drawCircle(NothingRed,3.dp.toPx(),arrowCenter+northArrow*22.dp.toPx())
-                val anchorPx=Offset(size.width/2f,size.height/2f)+anchor
-                drawCircle(NothingRed,10.dp.toPx(),anchorPx,style=Stroke(2.dp.toPx()))
-                drawLine(NothingRed,anchorPx-Offset(14.dp.toPx(),0f),anchorPx+Offset(14.dp.toPx(),0f),2.dp.toPx())
-                drawLine(NothingRed,anchorPx-Offset(0f,14.dp.toPx()),anchorPx+Offset(0f,14.dp.toPx()),2.dp.toPx())
+                val anchorPx=toPx(GraphPoint("anchor",anchor.x,anchor.y))
+                val anchorRadius=5.dp.toPx()
+                drawCircle(NothingRed,anchorRadius,anchorPx,style=Stroke(1.dp.toPx()))
+                drawLine(NothingRed,anchorPx-Offset(7.dp.toPx(),0f),anchorPx+Offset(7.dp.toPx(),0f),1.dp.toPx())
+                drawLine(NothingRed,anchorPx-Offset(0f,7.dp.toPx()),anchorPx+Offset(0f,7.dp.toPx()),1.dp.toPx())
                 drawContext.canvas.nativeCanvas.restore()
+                // North marker is fixed to the viewport and remains upright as the paper rotates.
+                val arrowCenter=Offset(size.width-48.dp.toPx(),48.dp.toPx())
+                val tip=arrowCenter+northArrow*20.dp.toPx()
+                val wing=Offset(-northArrow.y,northArrow.x)*6.dp.toPx()
+                drawLine(NothingRed,arrowCenter,tip,2.dp.toPx())
+                val head=Path().apply { moveTo(tip.x,tip.y); lineTo(tip.x-northArrow.x*8.dp.toPx()+wing.x,tip.y-northArrow.y*8.dp.toPx()+wing.y); lineTo(tip.x-northArrow.x*8.dp.toPx()-wing.x,tip.y-northArrow.y*8.dp.toPx()-wing.y); close() }
+                drawPath(head,NothingRed)
             }
 
             Text(
@@ -607,6 +616,29 @@ private fun RibbonToolButton(
 
 private fun formatAxisValue(value: Float): String =
     if (value % 1f == 0f) value.toInt().toString() else String.format(java.util.Locale.US, "%.2f", value)
+
+private fun rotateVector(v: Offset, degrees: Float): Offset {
+    val radians=Math.toRadians(degrees.toDouble()); val c=kotlin.math.cos(radians).toFloat(); val s=kotlin.math.sin(radians).toFloat()
+    return Offset(v.x*c-v.y*s,v.x*s+v.y*c)
+}
+
+private fun snapGraphAngle(angle: Float): Float {
+    val normalized=((angle%360f)+360f)%360f
+    val stops=floatArrayOf(0f,45f,90f,135f,180f,225f,270f,315f,360f)
+    val stop=stops.minBy { kotlin.math.abs((((it-normalized+540f)%360f)-180f)) }
+    val delta=(((stop-normalized+540f)%360f)-180f)
+    val distance=kotlin.math.abs(delta)
+    // Broad attraction zone with a firm snap at the requested compass angles.
+    val result=when { distance<=5.5f -> stop; distance<=13f -> normalized+delta*((13f-distance)/15f); else -> normalized }
+    return ((result%360f)+360f)%360f
+}
+
+private fun screenToGraph(position: Offset,width: Float,height: Float,pan: Offset,zoom: Float,rotation: Float,grid: Float,ratio: Float): Offset {
+    val center=Offset(width/2f,height/2f)
+    val local=rotateVector(position-center,-rotation)-pan
+    val pixelsPerSquare=grid*zoom
+    return Offset(local.x/pixelsPerSquare*ratio,-local.y/pixelsPerSquare*ratio)
+}
 
 @Composable
 private fun UnitMenu(value: String, onChange: (String) -> Unit) {
