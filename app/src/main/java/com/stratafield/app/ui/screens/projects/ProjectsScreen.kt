@@ -199,7 +199,7 @@ private fun CreateProjectDialog(
     var location by remember { mutableStateOf("") }
     var director by remember { mutableStateOf("") }
     var institution by remember { mutableStateOf("") }
-    var standard by remember { mutableStateOf(StandardType.CUSTOM) }
+    val standard = StandardType.CUSTOM
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -240,29 +240,6 @@ private fun CreateProjectDialog(
                     minLines = 3
                 )
 
-                Text(
-                    text = "Data Standard",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    StandardType.entries.forEach { type ->
-                        FilterChip(
-                            selected = standard == type,
-                            onClick = { standard = type },
-                            label = { Text(type.name) },
-                            shape = RoundedCornerShape(8.dp),
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = MaterialTheme.colorScheme.primary,
-                                selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
-                                containerColor = MaterialTheme.colorScheme.surfaceVariant,
-                                labelColor = MaterialTheme.colorScheme.onSurface
-                            )
-                        )
-                    }
-                }
             }
         },
         confirmButton = {

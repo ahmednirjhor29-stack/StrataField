@@ -475,6 +475,8 @@ internal fun FormFillScreen(
     val templateFields = remember(template) { viewModel.parseFields(template.fieldsJson) }
     var extraFields by rememberSaveable(stateSaver = ExtraFieldsSaver) { mutableStateOf(emptyList()) }
     val formData = rememberSaveable(saver = FormDataSaver) { mutableStateMapOf() }
+    val projectDetails by viewModel.currentProject.collectAsState()
+    val projectName = projectDetails?.takeIf { it.project.id == projectId }?.project?.name.orEmpty()
     val defaultSurveyorName by SurveyorPreferences.surveyorName(context).collectAsState()
     var showDrawing by rememberSaveable { mutableStateOf(false) }
     var showGraphPaper by rememberSaveable { mutableStateOf(false) }
@@ -484,11 +486,22 @@ internal fun FormFillScreen(
     var showCompleteConfirm by rememberSaveable { mutableStateOf(false) }
     var activeFieldId by rememberSaveable { mutableStateOf<String?>(null) }
     val allFields = templateFields + extraFields
-    LaunchedEffect(template.id, defaultSurveyorName) {
+    LaunchedEffect(template.id, defaultSurveyorName, projectName) {
         val surveyorFieldId = allFields.firstOrNull { it.id == "surveyor_name" }?.id
         if (defaultSurveyorName.isNotBlank() && surveyorFieldId != null && formData[surveyorFieldId].isNullOrBlank()) {
             formData[surveyorFieldId] = defaultSurveyorName
         }
+        val surveyNameFieldId = allFields.firstOrNull { it.id == "survey_name" }?.id
+        if (projectName.isNotBlank() && surveyNameFieldId != null && formData[surveyNameFieldId].isNullOrBlank()) {
+            formData[surveyNameFieldId] = projectName
+        }
+    }
+    fun responseFormName(): String {
+        val locationField = allFields.firstOrNull { it.fieldType == FieldType.GPS }
+        val siteName = locationField?.let { parseLocation(formData[it.id].orEmpty()).siteName.orEmpty().trim() }.orEmpty()
+        val date = allFields.firstOrNull { it.fieldType == FieldType.DATE }
+            ?.let { formData[it.id].orEmpty().trim() }.orEmpty()
+        return listOf(siteName, date).filter(String::isNotBlank).joinToString(" - ").ifBlank { template.name }
     }
     val darkMode = MaterialTheme.colorScheme.background.luminance() < 0.5f
     val sectionBackgrounds = if (darkMode) listOf(
@@ -523,7 +536,7 @@ internal fun FormFillScreen(
                                     siteId = null,
                                     trenchId = null,
                                     templateId = template.id,
-                                    formName = template.name,
+                                    formName = responseFormName(),
                                     formType = template.formType,
                                     data = formData.toMap(),
                                     status = DataStatus.DRAFT
@@ -658,7 +671,7 @@ internal fun FormFillScreen(
                                 siteId = null,
                                 trenchId = null,
                                 templateId = template.id,
-                                formName = template.name,
+                                formName = responseFormName(),
                                 formType = template.formType,
                                 data = formData.toMap(),
                                 status = DataStatus.COMPLETE
@@ -1128,6 +1141,7 @@ private fun FormFieldInput(
 
 private data class SurveyLocationData(
     val crs: String = "EPSG:4326",
+    val siteName: String = "",
     val latitude: Double? = null,
     val longitude: Double? = null,
     val gnssElevation: Double? = null,
@@ -1195,6 +1209,13 @@ private fun SurveyLocationField(
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedTextField(
+            value = location.siteName,
+            onValueChange = { save(location.copy(siteName = it)) },
+            label = { Text("Site Name") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
         if (location.crs == "EPSG:4326") Box {
             OutlinedButton(onClick={formatExpanded=true}, modifier=Modifier.fillMaxWidth()) { Text("Coordinate format: $coordinateFormat", modifier=Modifier.weight(1f)); Icon(Icons.Filled.ArrowDropDown, null) }
             DropdownMenu(expanded=formatExpanded,onDismissRequest={formatExpanded=false}) {
