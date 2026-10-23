@@ -280,8 +280,8 @@ fun GraphPointTool(
                     }
                     .pointerInput(anchorMode, northMode) {
                         if(anchorMode || northMode) detectDragGestures(
-                            onDragStart = { p -> if(anchorMode) anchor=screenToGraph(p,size.width.toFloat(),size.height.toFloat(),panOffset,zoom,GRID_DP.dp.toPx(),(scaleRatioText.toFloatOrNull()?.takeIf { it>0f }?:1f)/MINOR_SQUARES_PER_MAJOR) else { val c=Offset(size.width-48.dp.toPx(),48.dp.toPx()); val d=p-c; val m=hypot(d.x.toDouble(),d.y.toDouble()).toFloat().coerceAtLeast(1f); northArrow=d/m } },
-                            onDrag = { change, _ -> change.consume(); if(anchorMode) anchor=screenToGraph(change.position,size.width.toFloat(),size.height.toFloat(),panOffset,zoom,GRID_DP.dp.toPx(),(scaleRatioText.toFloatOrNull()?.takeIf { it>0f }?:1f)/MINOR_SQUARES_PER_MAJOR) else { val c=Offset(size.width-48.dp.toPx(),48.dp.toPx()); val d=change.position-c; val m=hypot(d.x.toDouble(),d.y.toDouble()).toFloat().coerceAtLeast(1f); northArrow=d/m } }
+                            onDragStart = { p -> if(anchorMode) anchor=screenToGraph(p,size.width.toFloat(),size.height.toFloat(),panOffset,zoom,GRID_DP.dp.toPx(),(scaleRatioText.toFloatOrNull()?.takeIf { it>0f }?:1f)/MINOR_SQUARES_PER_MAJOR) else { val c=Offset(size.width-62.dp.toPx(),62.dp.toPx()); val d=p-c; val m=hypot(d.x.toDouble(),d.y.toDouble()).toFloat().coerceAtLeast(1f); northArrow=d/m } },
+                            onDrag = { change, _ -> change.consume(); if(anchorMode) anchor=screenToGraph(change.position,size.width.toFloat(),size.height.toFloat(),panOffset,zoom,GRID_DP.dp.toPx(),(scaleRatioText.toFloatOrNull()?.takeIf { it>0f }?:1f)/MINOR_SQUARES_PER_MAJOR) else { val c=Offset(size.width-62.dp.toPx(),62.dp.toPx()); val d=change.position-c; val m=hypot(d.x.toDouble(),d.y.toDouble()).toFloat().coerceAtLeast(1f); northArrow=d/m } }
                         )
                     }
                     .pointerInput(connectMode, pointEditMode, eraserMode, points, zoom, panOffset) {
@@ -563,7 +563,7 @@ fun GraphPointTool(
                 drawLine(NothingRed,anchorPx-Offset(0f,7.dp.toPx()),anchorPx+Offset(0f,7.dp.toPx()),1.dp.toPx())
                 drawContext.canvas.nativeCanvas.restore()
                 // North marker is fixed to the viewport and remains upright as the paper rotates.
-                val arrowCenter=Offset(size.width-48.dp.toPx(),48.dp.toPx())
+                val arrowCenter=Offset(size.width-62.dp.toPx(),62.dp.toPx())
                 val tip=arrowCenter+northArrow*20.dp.toPx()
                 val wing=Offset(-northArrow.y,northArrow.x)*6.dp.toPx()
                 drawLine(NothingRed,arrowCenter,tip,2.dp.toPx())

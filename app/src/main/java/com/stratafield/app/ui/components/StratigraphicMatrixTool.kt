@@ -34,7 +34,7 @@ import com.google.gson.Gson
 import com.stratafield.app.ui.theme.NothingRed
 import java.util.PriorityQueue
 
-private const val MATRIX_HOLE = "\u0000"
+internal const val MATRIX_HOLE = "\u0000"
 private const val MAX_MATRIX_SIZE = 20
 
 data class MatrixData(
@@ -254,7 +254,7 @@ private fun SideAddButton(modifier: Modifier=Modifier,description: String,onClic
     }
 }
 
-private fun matrixConnectionRoute(a:Int,b:Int,cells:List<String>,rows:Int,cols:Int,cw:Float,ch:Float,gx:Float,gy:Float,clearance:Float,priorRoutes:List<List<Offset>>):List<Offset> {
+internal fun matrixConnectionRoute(a:Int,b:Int,cells:List<String>,rows:Int,cols:Int,cw:Float,ch:Float,gx:Float,gy:Float,clearance:Float,priorRoutes:List<List<Offset>>):List<Offset> {
     if(a !in cells.indices || b !in cells.indices || a==b) return emptyList()
     data class Port(val anchor:Offset,val outside:Offset)
     fun ports(index:Int):List<Port> {
