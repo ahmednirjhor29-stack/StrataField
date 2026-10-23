@@ -118,17 +118,16 @@ fun GraphPointTool(
     fun changeUnit(newUnit: String) {
         val oldUnit = squareUnit
         if (oldUnit == newUnit) return
-        val oldRatio = scaleRatioText.toFloatOrNull()?.takeIf { it > 0f } ?: 1f
         history.add(GraphSnapshot(points.toList(),connections.toList(),inkStrokes.toList(),scaleRatioText,squareUnit,anchor))
         redoHistory.clear()
-        // Store all geometry in the selected unit. Convert in one pass so points,
-        // ink, calibration, and the paper anchor remain physically aligned.
+        // Keep the grid calibration number fixed in the newly selected unit.
+        // This converts coordinates to the new unit and redraws them at their
+        // corresponding locations on that unit's grid (10 cm becomes 0.1 m).
         points = points.map { point -> point.copy(x=convertUnit(point.x,oldUnit,newUnit),y=convertUnit(point.y,oldUnit,newUnit)) }
         inkStrokes = inkStrokes.map { stroke -> stroke.copy(points=stroke.points.map { p -> GraphInkPoint(convertUnit(p.x,oldUnit,newUnit),convertUnit(p.y,oldUnit,newUnit)) }) }
         anchor = Offset(convertUnit(anchor.x,oldUnit,newUnit),convertUnit(anchor.y,oldUnit,newUnit))
         xInput = xInput.toFloatOrNull()?.let { convertUnit(it,oldUnit,newUnit).toString() } ?: xInput
         yInput = yInput.toFloatOrNull()?.let { convertUnit(it,oldUnit,newUnit).toString() } ?: yInput
-        scaleRatioText = convertUnit(oldRatio,oldUnit,newUnit).toString()
         squareUnit = newUnit
         pushData()
     }
