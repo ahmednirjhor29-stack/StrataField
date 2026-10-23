@@ -22,9 +22,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.nativeCanvas
-import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
@@ -63,7 +61,7 @@ data class GraphPaperData(
 data class GraphInkPoint(val x: Float, val y: Float)
 data class GraphInkStroke(val points: List<GraphInkPoint>, val color: Long, val width: Float = 3f)
 
-private data class GraphSnapshot(val points: List<GraphPoint>, val connections: List<GraphConnection>, val inkStrokes: List<GraphInkStroke>)
+private data class GraphSnapshot(val points: List<GraphPoint>, val connections: List<GraphConnection>, val inkStrokes: List<GraphInkStroke>, val scaleRatio: String, val unit: String, val anchor: Offset)
 
 private const val GRID_DP = 28f
 private const val HIT_RADIUS_PX = 45f
@@ -117,18 +115,38 @@ fun GraphPointTool(
         onDataChange(GraphPaperData(ratio, squareUnit, points, connections, inkStrokes))
     }
 
-    fun snapshot() = GraphSnapshot(points.toList(), connections.toList(), inkStrokes.toList())
+    fun changeUnit(newUnit: String) {
+        val oldUnit = squareUnit
+        if (oldUnit == newUnit) return
+        val oldRatio = scaleRatioText.toFloatOrNull()?.takeIf { it > 0f } ?: 1f
+        history.add(GraphSnapshot(points.toList(),connections.toList(),inkStrokes.toList(),scaleRatioText,squareUnit,anchor))
+        redoHistory.clear()
+        // Store all geometry in the selected unit. Convert in one pass so points,
+        // ink, calibration, and the paper anchor remain physically aligned.
+        points = points.map { point -> point.copy(x=convertUnit(point.x,oldUnit,newUnit),y=convertUnit(point.y,oldUnit,newUnit)) }
+        inkStrokes = inkStrokes.map { stroke -> stroke.copy(points=stroke.points.map { p -> GraphInkPoint(convertUnit(p.x,oldUnit,newUnit),convertUnit(p.y,oldUnit,newUnit)) }) }
+        anchor = Offset(convertUnit(anchor.x,oldUnit,newUnit),convertUnit(anchor.y,oldUnit,newUnit))
+        xInput = xInput.toFloatOrNull()?.let { convertUnit(it,oldUnit,newUnit).toString() } ?: xInput
+        yInput = yInput.toFloatOrNull()?.let { convertUnit(it,oldUnit,newUnit).toString() } ?: yInput
+        scaleRatioText = convertUnit(oldRatio,oldUnit,newUnit).toString()
+        squareUnit = newUnit
+        pushData()
+    }
+
+    fun snapshot() = GraphSnapshot(points.toList(), connections.toList(), inkStrokes.toList(), scaleRatioText, squareUnit, anchor)
     fun recordUndo() { history.add(snapshot()); redoHistory.clear() }
     fun undo() {
         val previous = history.removeLastOrNull() ?: return
         redoHistory.add(snapshot())
         points = previous.points; connections = previous.connections; inkStrokes = previous.inkStrokes
+        scaleRatioText=previous.scaleRatio; squareUnit=previous.unit; anchor=previous.anchor
         selectedPointId = null; pushData()
     }
     fun redo() {
         val next = redoHistory.removeLastOrNull() ?: return
         history.add(snapshot())
         points = next.points; connections = next.connections; inkStrokes = next.inkStrokes
+        scaleRatioText=next.scaleRatio; squareUnit=next.unit; anchor=next.anchor
         selectedPointId = null; pushData()
     }
 
@@ -202,13 +220,14 @@ fun GraphPointTool(
                             val oldZoom=zoom; val newZoom=(oldZoom*gestureZoom).coerceIn(0.12f,12f)
                             val center=Offset(size.width/2f,size.height/2f)
                             val oldAngle=rotation
-                            val nextAngle=if(rotationLocked) oldAngle else snapGraphAngle(oldAngle+gestureRotation)
+                            val hasTwoFingerTwist=kotlin.math.abs(gestureRotation)>0.15f
+                            val nextAngle=if(rotationLocked || !hasTwoFingerTwist) oldAngle else snapGraphAngle(oldAngle+gestureRotation)
                             val centroidLocal=rotateVector(centroid-center,-oldAngle)
                             val worldAtCentroid=centroidLocal-panOffset
                             val panLocal=rotateVector(pan,-nextAngle)
                             panOffset=centroidLocal-worldAtCentroid*(newZoom/oldZoom)+panLocal
                             zoom=newZoom
-                            if(!rotationLocked && gestureRotation.isFinite()) rotation=nextAngle
+                            if(!rotationLocked && hasTwoFingerTwist && gestureRotation.isFinite()) rotation=nextAngle
                         }
                     }
                     .pointerInput(anchorMode, northMode) {
@@ -538,7 +557,7 @@ fun GraphPointTool(
             shape = RoundedCornerShape(20.dp),
             title = { Text("Choose Units", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface) },
             text = {
-                UnitMenu(value = squareUnit, onChange = { newUnit -> squareUnit = newUnit; pushData() })
+                UnitMenu(value = squareUnit, onChange = ::changeUnit)
             },
             confirmButton = {
                 TextButton(onClick = { showUnitDialog = false }) {
