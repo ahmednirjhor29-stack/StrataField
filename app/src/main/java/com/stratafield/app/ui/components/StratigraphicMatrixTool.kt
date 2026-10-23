@@ -26,12 +26,11 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.google.gson.Gson
 import com.stratafield.app.ui.theme.NothingRed
-import java.util.ArrayDeque
+import java.util.PriorityQueue
 
 private const val MATRIX_HOLE = "\u0000"
 private const val MAX_MATRIX_SIZE = 20
@@ -140,13 +139,20 @@ fun StratigraphicMatrixTool(modifier: Modifier = Modifier, initialValue: String 
             val contentWidth=cellWidth*cols+gapX*(cols-1)
             val contentHeight=cellHeight*rows+gapY*(rows-1)
             val hScroll=rememberScrollState(); val vScroll=rememberScrollState()
+            val routes=remember(matrix,grid,rows,cols,cellWidth,cellHeight,gapX,gapY) {
+                matrix.connections.associateWith { pair ->
+                    if(pair.size==2 && pair.all { it in grid.indices && grid[it]!=MATRIX_HOLE })
+                        matrixConnectionRoute(pair[0],pair[1],grid,rows,cols,cellWidth.value,cellHeight.value,gapX.value,gapY.value)
+                    else emptyList()
+                }
+            }
             Box(Modifier.fillMaxSize().horizontalScroll(hScroll).verticalScroll(vScroll)) {
                 Box(Modifier.width(contentWidth).height(contentHeight)) {
                     val lineColor=MaterialTheme.colorScheme.onSurfaceVariant
                     Canvas(Modifier.fillMaxSize()) {
                         matrix.connections.forEach { pair ->
                             if(pair.size==2 && pair.all { it in grid.indices && grid[it]!=MATRIX_HOLE }) {
-                                val route=matrixConnectionRoute(pair[0],pair[1],grid,rows,cols,cellWidth.toPx(),cellHeight.toPx(),gapX.toPx(),gapY.toPx())
+                                val route=routes[pair].orEmpty().map { Offset(it.x*density,it.y*density) }
                                 if(route.size>=2) {
                                     val path=Path().apply { moveTo(route.first().x,route.first().y); route.drop(1).forEach { lineTo(it.x,it.y) } }
                                     drawPath(path,lineColor,style=androidx.compose.ui.graphics.drawscope.Stroke(width=2.dp.toPx()))
@@ -209,38 +215,77 @@ private fun SideAddButton(modifier: Modifier=Modifier,description: String,onClic
 }
 
 private fun matrixConnectionRoute(a:Int,b:Int,cells:List<String>,rows:Int,cols:Int,cw:Float,ch:Float,gx:Float,gy:Float):List<Offset> {
-    val startR=a/cols; val startC=a%cols; val endR=b/cols; val endC=b%cols
-    val directions=listOf(-1 to 0,0 to 1,1 to 0,0 to -1)
-    val queue=ArrayDeque<Pair<Int,Int>>()
-    val start=startR to startC; val goal=endR to endC
-    val parent=mutableMapOf<Pair<Int,Int>,Pair<Int,Int>?>(); parent[start]=null; queue.add(start)
-    while(queue.isNotEmpty() && goal !in parent) {
-        val (r,c)=queue.removeFirst()
-        for((dr,dc) in directions) {
-            val nr=r+dr; val nc=c+dc
-            if(nr < -1 || nr > rows || nc < -1 || nc > cols) continue
-            val next=nr to nc
-            if(next in parent) continue
-            val inside=nr in 0 until rows && nc in 0 until cols
-            val index=nr*cols+nc
-            if(inside && next!=goal && next!=start && cells.getOrNull(index)!=MATRIX_HOLE) continue
-            parent[next]=r to c; queue.add(next)
+    if(a !in cells.indices || b !in cells.indices || a==b) return emptyList()
+    val xs=sortedSetOf<Float>(); val ys=sortedSetOf<Float>()
+    for(i in cells.indices) if(cells[i]!=MATRIX_HOLE) {
+        val row=i/cols; val col=i%cols
+        val left=col*(cw+gx); val top=row*(ch+gy)
+        xs.add(left); xs.add(left+cw/2); xs.add(left+cw)
+        ys.add(top); ys.add(top+ch/2); ys.add(top+ch)
+    }
+    if(xs.isEmpty() || ys.isEmpty()) return emptyList()
+    val x=xs.toList(); val y=ys.toList(); val nx=x.size; val ny=y.size; val count=nx*ny
+    fun id(ix:Int,iy:Int)=iy*nx+ix
+    fun point(node:Int)=Offset(x[node%nx],y[node/nx])
+    fun blocked(px:Float,py:Float):Boolean {
+        val c=kotlin.math.floor(px/(cw+gx)).toInt(); val r=kotlin.math.floor(py/(ch+gy)).toInt()
+        if(r !in 0 until rows || c !in 0 until cols) return false
+        if(cells.getOrNull(r*cols+c)==MATRIX_HOLE) return false
+        val left=c*(cw+gx); val top=r*(ch+gy)
+        return px>left+0.01f && px<left+cw-0.01f && py>top+0.01f && py<top+ch-0.01f
+    }
+    val free=BooleanArray(count) { n -> val p=point(n); !blocked(p.x,p.y) }
+    val adjacency=Array(count) { mutableListOf<Pair<Int,Float>>() }
+    for(iy in 0 until ny) for(ix in 0 until nx) {
+        val n=id(ix,iy); if(!free[n]) continue
+        if(ix+1<nx) {
+            val next=id(ix+1,iy); val midX=(x[ix]+x[ix+1])/2f
+            if(free[next] && !blocked(midX,y[iy])) {
+                val cost=x[ix+1]-x[ix]; adjacency[n].add(next to cost); adjacency[next].add(n to cost)
+            }
+        }
+        if(iy+1<ny) {
+            val next=id(ix,iy+1); val midY=(y[iy]+y[iy+1])/2f
+            if(free[next] && !blocked(x[ix],midY)) {
+                val cost=y[iy+1]-y[iy]; adjacency[n].add(next to cost); adjacency[next].add(n to cost)
+            }
         }
     }
-    if(goal !in parent) return emptyList()
-    val path=mutableListOf<Pair<Int,Int>>(); var cursor:Pair<Int,Int>?=goal
-    while(cursor!=null) { path.add(cursor); cursor=parent[cursor] }
-    path.reverse()
-    fun center(r:Int,c:Int)=Offset(c*(cw+gx)+cw/2,r*(ch+gy)+ch/2)
-    fun boundary(boxR:Int,boxC:Int,nextR:Int,nextC:Int):Offset {
-        val center=center(boxR,boxC); val dx=nextC-boxC; val dy=nextR-boxR
-        return when { dx>0 -> Offset(center.x+cw/2,center.y); dx<0 -> Offset(center.x-cw/2,center.y); dy>0 -> Offset(center.x,center.y+ch/2); else -> Offset(center.x,center.y-ch/2) }
+    fun boundaryNodes(index:Int):List<Int> {
+        val r=index/cols; val c=index%cols; val l=c*(cw+gx); val t=r*(ch+gy)
+        val xi=listOf(x.indexOf(l),x.indexOf(l+cw/2),x.indexOf(l+cw)).filter { it>=0 }
+        val yi=listOf(y.indexOf(t),y.indexOf(t+ch/2),y.indexOf(t+ch)).filter { it>=0 }
+        return buildList {
+            yi.forEach { iy -> xi.forEach { ix -> val n=id(ix,iy); if(free[n]) add(n) } }
+        }
     }
-    if(path.size==2) return listOf(boundary(startR,startC,endR,endC),boundary(endR,endC,startR,startC))
-    val result=mutableListOf(boundary(startR,startC,path[1].first,path[1].second))
-    path.drop(1).dropLast(1).forEach { result.add(center(it.first,it.second)) }
-    result.add(boundary(endR,endC,path[path.lastIndex-1].first,path[path.lastIndex-1].second))
-    return result
+    val starts=boundaryNodes(a); val goals=boundaryNodes(b).toSet()
+    if(starts.isEmpty() || goals.isEmpty()) return emptyList()
+    val distance=FloatArray(count) { Float.POSITIVE_INFINITY }; val previous=IntArray(count) { -1 }
+    val queue=PriorityQueue<Pair<Int,Float>>(compareBy { it.second })
+    starts.forEach { distance[it]=0f; queue.add(it to 0f) }
+    var found=-1
+    while(queue.isNotEmpty()) {
+        val (current,d)=queue.remove(); if(d!=distance[current]) continue
+        if(current in goals) { found=current; break }
+        for((next,cost) in adjacency[current]) {
+            val candidate=d+cost
+            if(candidate<distance[next]) { distance[next]=candidate; previous[next]=current; queue.add(next to candidate) }
+        }
+    }
+    if(found<0) return emptyList()
+    val route=mutableListOf<Offset>(); var node=found
+    while(node>=0) { route.add(point(node)); node=previous[node] }
+    route.reverse()
+    // Drop collinear vertices to keep rendering and persistence lightweight.
+    if(route.size<3) return route
+    val simplified=mutableListOf(route.first())
+    for(i in 1 until route.lastIndex) {
+        val p=simplified.last(); val c=route[i]; val n=route[i+1]
+        if(kotlin.math.abs((c.x-p.x)*(n.y-c.y)-(c.y-p.y)*(n.x-c.x))>0.01f) simplified.add(c)
+    }
+    simplified.add(route.last())
+    return simplified
 }
 
 fun serializeMatrix(data: MatrixData): String = Gson().toJson(data)
