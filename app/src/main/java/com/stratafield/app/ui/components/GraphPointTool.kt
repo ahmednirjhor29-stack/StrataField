@@ -70,6 +70,8 @@ data class GraphInkStroke(val points: List<GraphInkPoint>, val color: Long, val 
 private data class GraphSnapshot(val points: List<GraphPoint>, val connections: List<GraphConnection>, val inkStrokes: List<GraphInkStroke>, val scaleRatio: String, val ratioNumerator: String, val ratioDenominator: String, val unit: String, val anchor: Offset)
 
 private const val GRID_DP = 28f
+// The scale field describes one major (10 x 10 minor-square) grid square.
+private const val MINOR_SQUARES_PER_MAJOR = 10f
 private const val HIT_RADIUS_PX = 45f
 
 private fun ratioFieldText(value: Float): String = value.toString().removeSuffix(".0")
@@ -84,10 +86,9 @@ fun GraphPointTool(
     val density = LocalDensity.current.density
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
-    val initialNumerator = initialData.scaleRatioNumerator.takeIf { it.isFinite() && it > 0f } ?: 1f
     var scaleRatioText by remember { mutableStateOf(ratioFieldText(initialData.scaleRatio)) }
-    var ratioNumeratorInput by remember { mutableStateOf(ratioFieldText(initialNumerator)) }
-    var ratioDenominatorInput by remember { mutableStateOf(ratioFieldText(initialData.scaleRatio * initialNumerator)) }
+    var ratioNumeratorInput by remember { mutableStateOf("1") }
+    var ratioDenominatorInput by remember { mutableStateOf(ratioFieldText(initialData.scaleRatio)) }
     var squareUnit by remember { mutableStateOf(initialData.squareUnit.ifBlank { "cm" }) }
     var points by remember { mutableStateOf(initialData.points) }
     var connections by remember { mutableStateOf(initialData.connections) }
@@ -123,7 +124,7 @@ fun GraphPointTool(
 
     fun pushData() {
         val ratio = scaleRatioText.toFloatOrNull()?.takeIf { it > 0f } ?: 1f
-        onDataChange(GraphPaperData(ratio, squareUnit, points, connections, inkStrokes, ratioNumeratorInput.toFloatOrNull()?.takeIf { it > 0f } ?: 1f))
+        onDataChange(GraphPaperData(ratio, squareUnit, points, connections, inkStrokes, 1f))
     }
 
     fun changeUnit(newUnit: String) {
@@ -210,35 +211,29 @@ fun GraphPointTool(
                     RibbonToolButton(Icons.Filled.MyLocation, "Anchor", true, Modifier.weight(1f), anchorMode) { anchorMode=!anchorMode; northMode=false }
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                    RibbonToolButton(Icons.Filled.CenterFocusStrong, "Center", true, Modifier.weight(1f)) { val g=GRID_DP*density*zoom; val ratio=scaleRatioText.toFloatOrNull()?.takeIf { it>0f }?:1f; panOffset=Offset(-anchor.x/ratio*g,anchor.y/ratio*g) }
+                    RibbonToolButton(Icons.Filled.CenterFocusStrong, "Center", true, Modifier.weight(1f)) { val g=GRID_DP*density*zoom; val ratio=(scaleRatioText.toFloatOrNull()?.takeIf { it>0f }?:1f)/MINOR_SQUARES_PER_MAJOR; panOffset=Offset(-anchor.x/ratio*g,anchor.y/ratio*g) }
                     Row(Modifier.weight(3f).height(40.dp).zIndex(1f), verticalAlignment=Alignment.CenterVertically, horizontalArrangement=Arrangement.Center) {
                         val ratioTextStyle = MaterialTheme.typography.labelLarge.copy(color=MaterialTheme.colorScheme.onSurface)
                         val ratioKeyboard = KeyboardOptions(keyboardType=androidx.compose.ui.text.input.KeyboardType.Decimal, imeAction=androidx.compose.ui.text.input.ImeAction.Done)
                         val ratioKeyboardActions = KeyboardActions(onDone={ focusManager.clearFocus(); keyboardController?.hide() })
-                        @Composable fun RatioInput(value: String, onValueChange: (String) -> Unit, isNumerator: Boolean) {
-                            BasicTextField(
-                                value=value,
-                                onValueChange={ text ->
-                                    val numeratorText=if(isNumerator) text else ratioNumeratorInput
-                                    val denominatorText=if(isNumerator) ratioDenominatorInput else text
-                                    val numerator=numeratorText.toFloatOrNull()?.takeIf { it.isFinite() && it>0f }
-                                    val denominator=denominatorText.toFloatOrNull()?.takeIf { it.isFinite() && it>0f }
-                                    if(numerator!=null && denominator!=null) changeScaleRatio(denominator/numerator,numeratorText,denominatorText)
-                                    onValueChange(text)
-                                },
-                                modifier=Modifier.weight(1f).height(28.dp)
-                                    .border(0.7.dp,MaterialTheme.colorScheme.outline,RoundedCornerShape(3.dp))
-                                    .padding(horizontal=3.dp, vertical=1.dp),
-                                singleLine=true,
-                                textStyle=ratioTextStyle,
-                                keyboardOptions=ratioKeyboard,
-                                keyboardActions=ratioKeyboardActions,
-                                decorationBox={ innerTextField -> Box(Modifier.fillMaxSize(),contentAlignment=Alignment.TopStart) { innerTextField() } }
-                            )
-                        }
-                        RatioInput(ratioNumeratorInput,{ ratioNumeratorInput=it },true)
+                        Text("1", modifier=Modifier.weight(1f).height(28.dp), style=ratioTextStyle)
                         Text(":",Modifier.padding(horizontal=3.dp),style=MaterialTheme.typography.labelLarge,color=MaterialTheme.colorScheme.onSurface)
-                        RatioInput(ratioDenominatorInput,{ ratioDenominatorInput=it },false)
+                        BasicTextField(
+                            value=ratioDenominatorInput,
+                            onValueChange={ text ->
+                                ratioDenominatorInput=text
+                                val value=text.toFloatOrNull()?.takeIf { it.isFinite() && it>0f }
+                                if(value!=null) changeScaleRatio(value,"1",text)
+                            },
+                            modifier=Modifier.weight(1f).height(28.dp)
+                                .border(0.7.dp,MaterialTheme.colorScheme.outline,RoundedCornerShape(3.dp))
+                                .padding(horizontal=3.dp, vertical=1.dp),
+                            singleLine=true,
+                            textStyle=ratioTextStyle,
+                            keyboardOptions=ratioKeyboard,
+                            keyboardActions=ratioKeyboardActions,
+                            decorationBox={ innerTextField -> Box(Modifier.fillMaxSize(),contentAlignment=Alignment.TopStart) { innerTextField() } }
+                        )
                     }
                     RibbonToolButton(Icons.Filled.Straighten, "Units", true, Modifier.weight(1f)) { showUnitDialog = true }
                     repeat(4) { Spacer(Modifier.weight(1f)) }
@@ -282,8 +277,8 @@ fun GraphPointTool(
                     }
                     .pointerInput(anchorMode, northMode) {
                         if(anchorMode || northMode) detectDragGestures(
-                            onDragStart = { p -> if(anchorMode) anchor=screenToGraph(p,size.width.toFloat(),size.height.toFloat(),panOffset,zoom,GRID_DP.dp.toPx(),scaleRatioText.toFloatOrNull()?.takeIf { it>0f }?:1f) else { val c=Offset(size.width-48.dp.toPx(),48.dp.toPx()); val d=p-c; val m=hypot(d.x.toDouble(),d.y.toDouble()).toFloat().coerceAtLeast(1f); northArrow=d/m } },
-                            onDrag = { change, _ -> change.consume(); if(anchorMode) anchor=screenToGraph(change.position,size.width.toFloat(),size.height.toFloat(),panOffset,zoom,GRID_DP.dp.toPx(),scaleRatioText.toFloatOrNull()?.takeIf { it>0f }?:1f) else { val c=Offset(size.width-48.dp.toPx(),48.dp.toPx()); val d=change.position-c; val m=hypot(d.x.toDouble(),d.y.toDouble()).toFloat().coerceAtLeast(1f); northArrow=d/m } }
+                            onDragStart = { p -> if(anchorMode) anchor=screenToGraph(p,size.width.toFloat(),size.height.toFloat(),panOffset,zoom,GRID_DP.dp.toPx(),(scaleRatioText.toFloatOrNull()?.takeIf { it>0f }?:1f)/MINOR_SQUARES_PER_MAJOR) else { val c=Offset(size.width-48.dp.toPx(),48.dp.toPx()); val d=p-c; val m=hypot(d.x.toDouble(),d.y.toDouble()).toFloat().coerceAtLeast(1f); northArrow=d/m } },
+                            onDrag = { change, _ -> change.consume(); if(anchorMode) anchor=screenToGraph(change.position,size.width.toFloat(),size.height.toFloat(),panOffset,zoom,GRID_DP.dp.toPx(),(scaleRatioText.toFloatOrNull()?.takeIf { it>0f }?:1f)/MINOR_SQUARES_PER_MAJOR) else { val c=Offset(size.width-48.dp.toPx(),48.dp.toPx()); val d=change.position-c; val m=hypot(d.x.toDouble(),d.y.toDouble()).toFloat().coerceAtLeast(1f); northArrow=d/m } }
                         )
                     }
                     .pointerInput(connectMode, pointEditMode, eraserMode, points, zoom, panOffset) {
@@ -294,12 +289,12 @@ fun GraphPointTool(
                             val originX = size.width / 2f + panOffset.x
                             val originY = size.height / 2f + panOffset.y
                             val hit = points.minByOrNull { p ->
-                                val px = originX + (p.x / (scaleRatioText.toFloatOrNull()?.takeIf { it > 0f } ?: 1f)) * gridPx
-                                val py = originY - (p.y / (scaleRatioText.toFloatOrNull()?.takeIf { it > 0f } ?: 1f)) * gridPx
+                                val px = originX + (p.x / ((scaleRatioText.toFloatOrNull()?.takeIf { it > 0f } ?: 1f)/MINOR_SQUARES_PER_MAJOR)) * gridPx
+                                val py = originY - (p.y / ((scaleRatioText.toFloatOrNull()?.takeIf { it > 0f } ?: 1f)/MINOR_SQUARES_PER_MAJOR)) * gridPx
                                 hypot((px - down.x).toDouble(), (py - down.y).toDouble()).toFloat()
                             }?.takeIf { p ->
-                                val px = originX + (p.x / (scaleRatioText.toFloatOrNull()?.takeIf { it > 0f } ?: 1f)) * gridPx
-                                val py = originY - (p.y / (scaleRatioText.toFloatOrNull()?.takeIf { it > 0f } ?: 1f)) * gridPx
+                                val px = originX + (p.x / ((scaleRatioText.toFloatOrNull()?.takeIf { it > 0f } ?: 1f)/MINOR_SQUARES_PER_MAJOR)) * gridPx
+                                val py = originY - (p.y / ((scaleRatioText.toFloatOrNull()?.takeIf { it > 0f } ?: 1f)/MINOR_SQUARES_PER_MAJOR)) * gridPx
                                 hypot((px - down.x).toDouble(), (py - down.y).toDouble()) <= HIT_RADIUS_PX
                             }
 
@@ -364,7 +359,7 @@ fun GraphPointTool(
                     }
                     .pointerInput(eraserMode, zoom, panOffset, scaleRatioText, inkStrokes, points, connections) {
                         if (!eraserMode) return@pointerInput
-                        val ratio = scaleRatioText.toFloatOrNull()?.takeIf { it > 0f } ?: 1f
+                        val ratio = (scaleRatioText.toFloatOrNull()?.takeIf { it > 0f } ?: 1f)/MINOR_SQUARES_PER_MAJOR
                         val gridPx = GRID_DP.dp.toPx() * zoom
                         val originX = size.width / 2f + panOffset.x
                         val originY = size.height / 2f + panOffset.y
@@ -400,7 +395,7 @@ fun GraphPointTool(
                         if (connectMode || pointEditMode || eraserMode) return@pointerInput
                         detectTapGestures { position ->
                             val gridPx = GRID_DP.dp.toPx() * zoom
-                            val ratio = scaleRatioText.toFloatOrNull()?.takeIf { it > 0f } ?: 1f
+                            val ratio = (scaleRatioText.toFloatOrNull()?.takeIf { it > 0f } ?: 1f)/MINOR_SQUARES_PER_MAJOR
                             val originX = size.width / 2f + panOffset.x
                             val originY = size.height / 2f + panOffset.y
                             val tappedPoint = points.minByOrNull { point ->
@@ -432,7 +427,7 @@ fun GraphPointTool(
                         }
                     }
             ) {
-                val ratio = scaleRatioText.toFloatOrNull()?.takeIf { it > 0f } ?: 1f
+                val ratio = (scaleRatioText.toFloatOrNull()?.takeIf { it > 0f } ?: 1f)/MINOR_SQUARES_PER_MAJOR
                 val gridPx = GRID_DP.dp.toPx() * zoom
                 val originX = size.width / 2f + panOffset.x
                 val originY = size.height / 2f + panOffset.y
