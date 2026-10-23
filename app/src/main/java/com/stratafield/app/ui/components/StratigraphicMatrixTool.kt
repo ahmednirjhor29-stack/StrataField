@@ -3,11 +3,9 @@ package com.stratafield.app.ui.components
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Clear
@@ -22,8 +20,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -57,6 +59,9 @@ fun StratigraphicMatrixTool(modifier: Modifier = Modifier, initialValue: String 
     val grid = remember(matrix, cols, rows) {
         List(rows * cols) { i -> matrix.cells.getOrNull(i) ?: MATRIX_HOLE }
     }
+    val density = LocalDensity.current.density
+    var zoom by remember { mutableFloatStateOf(1f) }
+    var pan by remember { mutableStateOf(Offset.Zero) }
     val cellWidth = 68.dp
     val cellHeight = 36.dp // three times the 12sp box text
     val gapX = 28.dp
@@ -135,19 +140,34 @@ fun StratigraphicMatrixTool(modifier: Modifier = Modifier, initialValue: String 
             }
         }
 
-        BoxWithConstraints(Modifier.fillMaxWidth().heightIn(min=180.dp).height(360.dp)) {
+        BoxWithConstraints(Modifier.fillMaxWidth().heightIn(min=180.dp).height(720.dp).clipToBounds()) {
             val contentWidth=cellWidth*cols+gapX*(cols-1)
             val contentHeight=cellHeight*rows+gapY*(rows-1)
-            val hScroll=rememberScrollState(); val vScroll=rememberScrollState()
+            val viewportWidthPx = constraints.maxWidth.toFloat()
+            val viewportHeightPx = constraints.maxHeight.toFloat()
             val routes=remember(matrix,grid,rows,cols,cellWidth,cellHeight,gapX,gapY) {
                 matrix.connections.associateWith { pair ->
                     if(pair.size==2 && pair.all { it in grid.indices && grid[it]!=MATRIX_HOLE })
-                        matrixConnectionRoute(pair[0],pair[1],grid,rows,cols,cellWidth.value,cellHeight.value,gapX.value,gapY.value)
+                        matrixConnectionRoute(pair[0],pair[1],grid,rows,cols,cellWidth.value,cellHeight.value,gapX.value,gapY.value,1f/density)
                     else emptyList()
                 }
             }
-            Box(Modifier.fillMaxSize().horizontalScroll(hScroll).verticalScroll(vScroll)) {
-                Box(Modifier.width(contentWidth).height(contentHeight)) {
+            Box(Modifier.fillMaxSize().pointerInput(Unit) {
+                detectTransformGestures { centroid, panChange, zoomChange, _ ->
+                    val oldZoom = zoom
+                    val newZoom = (oldZoom * zoomChange).coerceIn(0.4f, 5f)
+                    val center = Offset(viewportWidthPx / 2f, viewportHeightPx / 2f)
+                    val focal = centroid - center
+                    pan = focal - (focal - pan) * (newZoom / oldZoom) + panChange
+                    zoom = newZoom
+                }
+            }) {
+                Box(Modifier.fillMaxSize().graphicsLayer {
+                    transformOrigin = TransformOrigin.Center
+                    scaleX = zoom; scaleY = zoom
+                    translationX = pan.x; translationY = pan.y
+                }) {
+                Box(Modifier.align(Alignment.Center).width(contentWidth).height(contentHeight)) {
                     val lineColor=MaterialTheme.colorScheme.onSurfaceVariant
                     Canvas(Modifier.fillMaxSize()) {
                         matrix.connections.forEach { pair ->
@@ -188,13 +208,14 @@ fun StratigraphicMatrixTool(modifier: Modifier = Modifier, initialValue: String 
                                 Text(text,style=MaterialTheme.typography.labelSmall.copy(fontSize=12.sp,fontWeight=FontWeight.Medium,textAlign=TextAlign.Center),maxLines=2)
                             }
                             if(selected) {
-                                SideAddButton(Modifier.offset(x=x-24.dp,y=y+6.dp),"Add square to left") { addBeside(index,0) }
-                                SideAddButton(Modifier.offset(x=x+cellWidth,y=y+6.dp),"Add square to right") { addBeside(index,1) }
-                                SideAddButton(Modifier.offset(x=x+22.dp,y=y-24.dp),"Add square above") { addBeside(index,2) }
-                                SideAddButton(Modifier.offset(x=x+22.dp,y=y+cellHeight),"Add square below") { addBeside(index,3) }
+                                SideAddButton(Modifier.offset(x=x-32.dp,y=y-2.dp),"Add square to left") { addBeside(index,0) }
+                                SideAddButton(Modifier.offset(x=x+cellWidth-8.dp,y=y-2.dp),"Add square to right") { addBeside(index,1) }
+                                SideAddButton(Modifier.offset(x=x+14.dp,y=y-32.dp),"Add square above") { addBeside(index,2) }
+                                SideAddButton(Modifier.offset(x=x+14.dp,y=y+cellHeight-8.dp),"Add square below") { addBeside(index,3) }
                             }
                         }
                     }
+                }
                 }
             }
         }
@@ -223,30 +244,36 @@ private fun orthogonalizeRoute(route: List<Offset>): List<Offset> {
 
 @Composable
 private fun SideAddButton(modifier: Modifier=Modifier,description: String,onClick:()->Unit) {
-    IconButton(onClick=onClick,modifier=modifier.size(24.dp).background(MaterialTheme.colorScheme.primaryContainer,RoundedCornerShape(50))) {
-        Icon(Icons.Default.Add,description,tint=MaterialTheme.colorScheme.onPrimaryContainer,modifier=Modifier.size(16.dp))
+    IconButton(onClick=onClick,modifier=modifier.size(40.dp)) {
+        Icon(Icons.Default.Add,description,tint=MaterialTheme.colorScheme.primary,modifier=Modifier.size(18.dp))
     }
 }
 
-private fun matrixConnectionRoute(a:Int,b:Int,cells:List<String>,rows:Int,cols:Int,cw:Float,ch:Float,gx:Float,gy:Float):List<Offset> {
+private fun matrixConnectionRoute(a:Int,b:Int,cells:List<String>,rows:Int,cols:Int,cw:Float,ch:Float,gx:Float,gy:Float,clearance:Float):List<Offset> {
     if(a !in cells.indices || b !in cells.indices || a==b) return emptyList()
     val xs=sortedSetOf<Float>(); val ys=sortedSetOf<Float>()
     for(i in cells.indices) if(cells[i]!=MATRIX_HOLE) {
         val row=i/cols; val col=i%cols
         val left=col*(cw+gx); val top=row*(ch+gy)
         xs.add(left); xs.add(left+cw/2); xs.add(left+cw)
+        xs.add(left-clearance); xs.add(left+cw+clearance)
         ys.add(top); ys.add(top+ch/2); ys.add(top+ch)
+        ys.add(top-clearance); ys.add(top+ch+clearance)
     }
     if(xs.isEmpty() || ys.isEmpty()) return emptyList()
     val x=xs.toList(); val y=ys.toList(); val nx=x.size; val ny=y.size; val count=nx*ny
     fun id(ix:Int,iy:Int)=iy*nx+ix
     fun point(node:Int)=Offset(x[node%nx],y[node/nx])
     fun blocked(px:Float,py:Float):Boolean {
-        val c=kotlin.math.floor(px/(cw+gx)).toInt(); val r=kotlin.math.floor(py/(ch+gy)).toInt()
-        if(r !in 0 until rows || c !in 0 until cols) return false
-        if(cells.getOrNull(r*cols+c)==MATRIX_HOLE) return false
-        val left=c*(cw+gx); val top=r*(ch+gy)
-        return px>left+0.01f && px<left+cw-0.01f && py>top+0.01f && py<top+ch-0.01f
+        for(index in cells.indices) {
+            if(cells[index]==MATRIX_HOLE) continue
+            val c=index%cols; val r=index/cols
+            val left=c*(cw+gx); val top=r*(ch+gy)
+            val margin=if(index==a || index==b) 0f else clearance
+            if(px>left-margin+0.01f && px<left+cw+margin-0.01f &&
+                py>top-margin+0.01f && py<top+ch+margin-0.01f) return true
+        }
+        return false
     }
     val free=BooleanArray(count) { n -> val p=point(n); !blocked(p.x,p.y) }
     val adjacency=Array(count) { mutableListOf<Pair<Int,Float>>() }
