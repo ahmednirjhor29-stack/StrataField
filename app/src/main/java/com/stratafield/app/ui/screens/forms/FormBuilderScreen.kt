@@ -29,6 +29,7 @@ import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -482,6 +483,14 @@ internal fun FormFillScreen(
     var showCompleteConfirm by rememberSaveable { mutableStateOf(false) }
     var activeFieldId by rememberSaveable { mutableStateOf<String?>(null) }
     val allFields = templateFields + extraFields
+    val darkMode = MaterialTheme.colorScheme.background.luminance() < 0.5f
+    val sectionBackgrounds = if (darkMode) listOf(
+        Color(0xFF202B27), Color(0xFF222A36), Color(0xFF30291F), Color(0xFF2D2532),
+        Color(0xFF302326), Color(0xFF202D32), Color(0xFF2B2D22), Color(0xFF242B32)
+    ) else listOf(
+        Color(0xFFF3F7F1), Color(0xFFF1F5FA), Color(0xFFFBF5EC), Color(0xFFF7F1F7),
+        Color(0xFFFCEFF0), Color(0xFFEEF6F7), Color(0xFFF5F6EA), Color(0xFFF0F3F7)
+    )
     Scaffold(
         containerColor = MaterialTheme.colorScheme.surface,
         topBar = {
@@ -552,7 +561,7 @@ internal fun FormFillScreen(
                 item {
                     Column(
                         modifier = Modifier.fillMaxWidth().background(
-                            listOf(Color(0xFFF3F7F1), Color(0xFFF1F5FA), Color(0xFFFBF5EC), Color(0xFFF7F1F7))[sections.keys.indexOf(section).mod(4)],
+                            sectionBackgrounds[sections.keys.indexOf(section).mod(sectionBackgrounds.size)],
                             RoundedCornerShape(16.dp)
                         ).padding(16.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp)
