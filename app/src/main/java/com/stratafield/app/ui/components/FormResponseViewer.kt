@@ -160,7 +160,8 @@ private fun buildViewerFields(template: FormTemplate?, data: Map<String, String>
     return orderedData.mapNotNull { (id, rawValue) ->
         if (rawValue.isBlank()) return@mapNotNull null
         val definition = definitions.firstOrNull { it.id == id }
-        val type = definition?.fieldType
+        val type = definition?.fieldType.takeIf { it.hasVisualPreview() } ?: inferSavedVisualType(id, rawValue)
+            ?: definition?.fieldType
         val value = readableViewerValue(rawValue, type)
         (if (type.hasVisualPreview()) listOf(value) else splitLongValue(value)).mapIndexed { index, part ->
             ViewerField(
@@ -173,6 +174,20 @@ private fun buildViewerFields(template: FormTemplate?, data: Map<String, String>
             )
         }
     }.flatten()
+}
+
+/** Older saved forms can outlive or lack their original template, so identify serialized visuals from their payload too. */
+private fun inferSavedVisualType(id: String, raw: String): FieldType? {
+    val key = id.lowercase(Locale.ROOT)
+    val json = runCatching { JsonParser.parseString(raw) }.getOrNull()
+    if (json?.isJsonObject == true) {
+        val obj = json.asJsonObject
+        if (obj.has("cells") && obj.has("connections") && obj.has("columns")) return FieldType.MATRIX
+        if (obj.has("points") && (obj.has("scaleRatio") || obj.has("squareUnit"))) return FieldType.GRAPH_PAPER
+    }
+    if ((key.contains("matrix") || key.contains("stratigraph")) && json?.isJsonObject == true) return FieldType.MATRIX
+    if ((key.contains("drawing") || key.contains("sketch")) && json?.isJsonArray == true) return FieldType.DRAWING
+    return null
 }
 
 private fun readableViewerValue(value: String, type: FieldType?): String {
