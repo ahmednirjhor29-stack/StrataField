@@ -160,10 +160,16 @@ fun GeologicalMapScreen(
     LaunchedEffect(pins, mapReady) {
         if (mapReady) mapHandle?.getStyle { it.getSourceAs<GeoJsonSource>("form-pins")?.setGeoJson(pinsGeoJson(pins)) }
     }
+    LaunchedEffect(draft, kind, mapReady) {
+        if (mapReady) {
+            val draftJson = GeologicalMapData.draftToGeoJson(draft, kind)
+            mapHandle?.getStyle { it.getSourceAs<GeoJsonSource>("geology-draft")?.setGeoJson(draftJson) }
+        }
+    }
     LaunchedEffect(visible, mapReady) {
         mapHandle?.getStyle { style ->
             val layerVisibility = if (visible) Property.VISIBLE else Property.NONE
-            listOf("geology-fill", "geology-lines", "geology-points", "geology-labels").forEach { style.getLayer(it)?.setProperties(visibility(layerVisibility)) }
+            listOf("geology-fill", "geology-lines", "geology-points", "geology-labels", "geology-draft-fill", "geology-draft-lines", "geology-draft-points").forEach { style.getLayer(it)?.setProperties(visibility(layerVisibility)) }
         }
     }
 
@@ -273,11 +279,15 @@ fun GeologicalMapScreen(
                             map.setStyle(Style.Builder().fromJson(bundledStyle)) { style ->
                                 android.util.Log.i("StrataMapLifecycle", "style loaded")
                                 style.addSource(GeoJsonSource("geology", GeologicalMapData.toGeoJson(features)))
+                                style.addSource(GeoJsonSource("geology-draft", GeologicalMapData.draftToGeoJson(draft, kind)))
                                 style.addSource(GeoJsonSource("form-pins", pinsGeoJson(pins)))
-                                style.addLayer(FillLayer("geology-fill", "geology").withProperties(fillColor(org.maplibre.android.style.expressions.Expression.get("color")), fillOpacity(0f)))
-                                style.addLayer(LineLayer("geology-lines", "geology").withProperties(lineColor(org.maplibre.android.style.expressions.Expression.get("color")), lineWidth(3.0f)))
+                                style.addLayer(FillLayer("geology-fill", "geology").withProperties(fillColor(org.maplibre.android.style.expressions.Expression.get("color")), fillOpacity(0.3f), fillOutlineColor(org.maplibre.android.style.expressions.Expression.get("color"))))
+                                style.addLayer(LineLayer("geology-lines", "geology").withProperties(lineColor(org.maplibre.android.style.expressions.Expression.get("color")), lineWidth(4.5f)))
                                 style.addLayer(CircleLayer("geology-points", "geology").withProperties(circleRadius(7f), circleColor(org.maplibre.android.style.expressions.Expression.get("color")), circleStrokeColor("#FFFFFF"), circleStrokeWidth(2f)))
                                 style.addLayer(SymbolLayer("geology-labels", "geology").withProperties(textField(org.maplibre.android.style.expressions.Expression.get("name")), textFont(arrayOf("Noto Sans Regular")), textSize(10f), textColor("#263238"), textHaloColor("#FFFFFF"), textHaloWidth(1.5f), textOffset(arrayOf(0f, 1.1f))))
+                                style.addLayer(FillLayer("geology-draft-fill", "geology-draft").withProperties(fillColor(org.maplibre.android.style.expressions.Expression.get("color")), fillOpacity(0.24f), fillOutlineColor(org.maplibre.android.style.expressions.Expression.get("color"))))
+                                style.addLayer(LineLayer("geology-draft-lines", "geology-draft").withProperties(lineColor(org.maplibre.android.style.expressions.Expression.get("color")), lineWidth(4.5f)))
+                                style.addLayer(CircleLayer("geology-draft-points", "geology-draft").withProperties(circleRadius(6f), circleColor(org.maplibre.android.style.expressions.Expression.get("color")), circleStrokeColor("#FFFFFF"), circleStrokeWidth(2f)))
                                 style.addLayer(CircleLayer("form-pin-circles", "form-pins").withProperties(circleRadius(8f), circleColor("#1565C0"), circleStrokeColor("#FFFFFF"), circleStrokeWidth(2f)))
                                 style.addLayer(SymbolLayer("form-pin-labels", "form-pins").withProperties(textField(org.maplibre.android.style.expressions.Expression.get("name")), textFont(arrayOf("Noto Sans Regular")), textSize(11f), textColor("#10243A"), textHaloColor("#FFFFFF"), textHaloWidth(1.5f), textOffset(arrayOf(0f, 1.2f))))
                                 map.uiSettings.isRotateGesturesEnabled = true

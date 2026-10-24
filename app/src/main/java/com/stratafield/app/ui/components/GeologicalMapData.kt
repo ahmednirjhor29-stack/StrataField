@@ -2,6 +2,7 @@ package com.stratafield.app.ui.components
 
 import com.google.gson.Gson
 import com.google.gson.JsonArray
+import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.stratafield.app.data.model.FormResponse
@@ -19,6 +20,34 @@ data class SurveyMapPin(val responseId: Long, val name: String, val notes: Strin
 /** GeoJSON is the persisted source of truth; map screen pixels are never stored. */
 object GeologicalMapData {
     private val gson = Gson()
+
+    fun draftToGeoJson(points: List<GeoPoint>, kind: String, color: String = "#D84315"): String {
+        val draftFeatures = JsonArray()
+        fun addFeature(type: String, coordinates: JsonElement) {
+            draftFeatures.add(JsonObject().apply {
+                addProperty("type", "Feature")
+                add("properties", JsonObject().apply { addProperty("color", color) })
+                add("geometry", JsonObject().apply {
+                    addProperty("type", type)
+                    add("coordinates", coordinates)
+                })
+            })
+        }
+        fun coordinate(point: GeoPoint) = JsonArray().also { it.add(point.longitude); it.add(point.latitude) }
+
+        points.forEach { addFeature("Point", coordinate(it)) }
+        if (kind == "polygon" && points.size >= 3) {
+            val ringPoints = points.toMutableList().apply { if (last() != first()) add(first()) }
+            addFeature("Polygon", JsonArray().also { rings -> rings.add(JsonArray().also { ring -> ringPoints.forEach { ring.add(coordinate(it)) } }) })
+        } else if (points.size >= 2) {
+            addFeature("LineString", JsonArray().also { line -> points.forEach { line.add(coordinate(it)) } })
+        }
+
+        return gson.toJson(JsonObject().apply {
+            addProperty("type", "FeatureCollection")
+            add("features", draftFeatures)
+        })
+    }
 
     fun toGeoJson(features: List<GeoFeature>): String {
         val collection = JsonObject().apply {
@@ -59,17 +88,20 @@ object GeologicalMapData {
     private fun featureJson(feature: GeoFeature): JsonObject {
         val geometryType = when (feature.kind) {
             "point", "text" -> "Point"
-            "polygon", "boundary", "fault", "contact" -> "LineString"
+            "polygon" -> "Polygon"
             else -> "LineString"
         }
         val coords = feature.points.map { p -> JsonArray().also { it.add(p.longitude); it.add(p.latitude) } }.toMutableList()
         val geometryCoordinates = when (geometryType) {
             "Point" -> coords.firstOrNull() ?: JsonArray()
+            "Polygon" -> JsonArray().also { rings ->
+                val closed = coords.toMutableList()
+                if (closed.size >= 3 && feature.points.last() != feature.points.first()) {
+                    closed.add(JsonArray().also { it.add(feature.points.first().longitude); it.add(feature.points.first().latitude) })
+                }
+                rings.add(JsonArray().also { ring -> closed.forEach(ring::add) })
+            }
             else -> JsonArray().also { array -> coords.forEach(array::add) }
-        }
-        if (feature.kind == "polygon" && coords.size >= 3) {
-            val first = feature.points.first()
-            if (feature.points.last() != first) coords.add(JsonArray().also { it.add(first.longitude); it.add(first.latitude) })
         }
         return JsonObject().apply {
             addProperty("type", "Feature")
@@ -80,9 +112,7 @@ object GeologicalMapData {
             })
             add("geometry", JsonObject().apply {
                 addProperty("type", geometryType)
-                add("coordinates", if (feature.kind == "polygon" && coords.size >= 4) JsonArray().also { ring ->
-                    ring.add(JsonArray().also { values -> coords.forEach(values::add) })
-                } else geometryCoordinates)
+                add("coordinates", geometryCoordinates)
             })
         }
     }
