@@ -185,7 +185,7 @@ fun GeologicalMapScreen(
                             map.setStyle(Style.Builder().fromJson(osmStyleJson())) { style ->
                                 style.addSource(GeoJsonSource("geology", GeologicalMapData.toGeoJson(features)))
                                 style.addSource(GeoJsonSource("form-pins", pinsGeoJson(pins)))
-                                style.addLayer(FillLayer("geology-fill", "geology").withProperties(fillColor(org.maplibre.android.style.expressions.Expression.get("color")), fillOpacity(0.20f)))
+                                style.addLayer(FillLayer("geology-fill", "geology").withProperties(fillColor(org.maplibre.android.style.expressions.Expression.get("color")), fillOpacity(0f)))
                                 style.addLayer(LineLayer("geology-lines", "geology").withProperties(lineColor(org.maplibre.android.style.expressions.Expression.get("color")), lineWidth(3.0f)))
                                 style.addLayer(CircleLayer("geology-points", "geology").withProperties(circleRadius(7f), circleColor(org.maplibre.android.style.expressions.Expression.get("color")), circleStrokeColor("#FFFFFF"), circleStrokeWidth(2f)))
                                 style.addLayer(SymbolLayer("geology-labels", "geology").withProperties(textField(org.maplibre.android.style.expressions.Expression.get("name")), textSize(10f), textColor("#263238"), textHaloColor("#FFFFFF"), textHaloWidth(1.5f), textOffset(arrayOf(0f, 1.1f))))
@@ -244,7 +244,13 @@ fun GeologicalMapScreen(
                                 }
                                 mapReady = true
                                 if (!cameraInitialized) {
-                                    pins.firstOrNull()?.point?.let { map.cameraPosition = CameraPosition.Builder().target(LatLng(it.latitude, it.longitude)).zoom(13.0).build() }
+                                    val initialTarget = pins.firstOrNull()?.point?.let { LatLng(it.latitude, it.longitude) }
+                                        ?: LatLng(20.0, 0.0)
+                                    val initialZoom = if (pins.isEmpty()) 1.5 else 13.0
+                                    map.cameraPosition = CameraPosition.Builder()
+                                        .target(initialTarget)
+                                        .zoom(initialZoom)
+                                        .build()
                                     cameraInitialized = true
                                 }
                             }
