@@ -62,6 +62,7 @@ fun ProjectDetailScreen(
     var editingFormResponse by remember { mutableStateOf<FormResponse?>(null) }
     var activeResponse by remember { mutableStateOf<FormResponse?>(null) }
     var activeResponseTemplate by remember { mutableStateOf<FormTemplate?>(null) }
+    var responsePendingDelete by remember { mutableStateOf<FormResponse?>(null) }
 
     LaunchedEffect(projectId) {
         viewModel.loadProjectDetail(projectId)
@@ -75,6 +76,10 @@ fun ProjectDetailScreen(
             activeResponseTemplate = viewModel.getFormTemplateForResponse(response)
             activeResponse = response
         }
+    }
+
+    fun requestDeleteResponse(response: FormResponse) {
+        responsePendingDelete = response
     }
 
     val tabs = listOf("Dashboard", "Survey", "Excavation")
@@ -177,6 +182,7 @@ fun ProjectDetailScreen(
                     mapLayerVisible = geologicalMapLayer?.visible ?: true,
                     onSaveMapLayer = { geoJson, visible -> viewModel.saveGeologicalMapLayer(projectId, geoJson, visible) },
                     onResponseClick = ::viewResponse,
+                    onResponseDelete = ::requestDeleteResponse,
                     onResponseEdit = { response ->
                         scope.launch {
                             val template = viewModel.getFormTemplateForResponse(response)
@@ -194,6 +200,7 @@ fun ProjectDetailScreen(
                         }
                     },
                     onResponseClick = ::viewResponse,
+                    onResponseDelete = ::requestDeleteResponse,
                     onResponseEdit = { response ->
                         scope.launch {
                             val template = viewModel.getFormTemplateForResponse(response)
@@ -280,6 +287,7 @@ fun ProjectDetailScreen(
             template = activeResponseTemplate,
             data = viewModel.parseResponseData(response.dataJson),
             onDismiss = { activeResponse = null; activeResponseTemplate = null },
+            onDelete = { requestDeleteResponse(response) },
             onEdit = {
                 val template = activeResponseTemplate
                 if (template != null) {
@@ -288,6 +296,33 @@ fun ProjectDetailScreen(
                     activeResponse = null
                     activeResponseTemplate = null
                 }
+            }
+        )
+    }
+
+    responsePendingDelete?.let { response ->
+        AlertDialog(
+            onDismissRequest = { responsePendingDelete = null },
+            title = { Text("Delete form?") },
+            text = { Text("Delete \"${response.formName}\" and its saved data? This cannot be undone.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        responsePendingDelete = null
+                        scope.launch {
+                            viewModel.deleteFormResponse(response)
+                            if (activeResponse?.id == response.id) {
+                                activeResponse = null
+                                activeResponseTemplate = null
+                            }
+                            viewModel.loadProjectDetail(projectId)
+                        }
+                    },
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                ) { Text("Delete") }
+            },
+            dismissButton = {
+                TextButton(onClick = { responsePendingDelete = null }) { Text("Cancel") }
             }
         )
     }
@@ -675,6 +710,7 @@ private fun SurveyTab(
     mapLayerVisible: Boolean,
     onSaveMapLayer: (String, Boolean) -> Unit,
     onResponseClick: (FormResponse) -> Unit,
+    onResponseDelete: (FormResponse) -> Unit,
     onResponseEdit: (FormResponse) -> Unit
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
@@ -701,7 +737,7 @@ private fun SurveyTab(
         }
 
         if (subTab == 0) {
-            FormsTab(responses = surveyResponses, onAdd = {}, onResponseClick = onResponseClick, onResponseEdit = onResponseEdit)
+            FormsTab(responses = surveyResponses, onAdd = {}, onResponseClick = onResponseClick, onResponseEdit = onResponseEdit, onResponseDelete = onResponseDelete)
         } else {
             GeologicalMapScreen(
                 projectId = projectId,
@@ -709,7 +745,8 @@ private fun SurveyTab(
                 savedGeoJson = mapGeoJson,
                 layerVisible = mapLayerVisible,
                 onSaveLayer = onSaveMapLayer,
-                onViewResponse = onResponseClick
+                onViewResponse = onResponseClick,
+                onDeleteResponse = onResponseDelete
             )
         }
     }
@@ -856,7 +893,8 @@ private fun FormsTab(
     responses: List<FormResponse>,
     onAdd: () -> Unit,
     onResponseClick: (FormResponse) -> Unit = {},
-    onResponseEdit: (FormResponse) -> Unit = {}
+    onResponseEdit: (FormResponse) -> Unit = {},
+    onResponseDelete: (FormResponse) -> Unit = {}
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -897,6 +935,13 @@ private fun FormsTab(
                                     TextButton(onClick = { onResponseEdit(response) }, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)) {
                                         Text("Edit")
                                     }
+                                }
+                                IconButton(onClick = { onResponseDelete(response) }) {
+                                    Icon(
+                                        Icons.Filled.Delete,
+                                        contentDescription = "Delete ${response.formName}",
+                                        tint = MaterialTheme.colorScheme.error
+                                    )
                                 }
                             }
                         }

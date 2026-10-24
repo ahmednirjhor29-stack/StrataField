@@ -46,7 +46,7 @@ import okhttp3.OkHttpClient
 import java.io.File
 import java.util.UUID
 
-private enum class MapMode { NAVIGATE, DRAW, SELECT }
+private enum class MapMode { NAVIGATE, DRAW, SELECT, DELETE }
 private enum class FeatureEditAction { NONE, MOVE, RESHAPE }
 private val featureKinds = listOf("point", "line", "polygon", "boundary", "fault", "contact", "text")
 
@@ -58,6 +58,7 @@ fun GeologicalMapScreen(
     layerVisible: Boolean,
     onSaveLayer: (String, Boolean) -> Unit,
     onViewResponse: (FormResponse) -> Unit,
+    onDeleteResponse: (FormResponse) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -68,6 +69,7 @@ fun GeologicalMapScreen(
     var kind by remember { mutableStateOf("point") }
     var draft by remember { mutableStateOf(emptyList<GeoPoint>()) }
     var selectedId by remember { mutableStateOf<String?>(null) }
+    var featurePendingDelete by remember { mutableStateOf<GeoFeature?>(null) }
     var selectedPin by remember { mutableStateOf<SurveyMapPin?>(null) }
     var mapView by remember { mutableStateOf<MapView?>(null) }
     var httpConfigured by remember { mutableStateOf(false) }
@@ -209,7 +211,7 @@ fun GeologicalMapScreen(
                     features = features.map { if (it.id == selectedId) it.copy(color = if (it.color == "#D84315") "#1565C0" else "#D84315") else it }
                     save()
                 }) { Icon(Icons.Default.Palette, "Change feature color") }
-                IconButton(onClick = { checkpoint(); features = features.filterNot { it.id == selectedId }; selectedId = null; save() }) { Icon(Icons.Default.Delete, "Delete selected feature") }
+                IconButton(onClick = { featurePendingDelete = features.firstOrNull { it.id == selectedId } }) { Icon(Icons.Default.Delete, "Delete selected feature") }
             }
         }
         Box(Modifier.weight(1f).fillMaxWidth()) {
@@ -317,6 +319,11 @@ fun GeologicalMapScreen(
                                                 save()
                                             } else selectedId = hitTest(tapped)?.id
                                         }
+                                        MapMode.DELETE -> {
+                                            selectedPin = null
+                                            featurePendingDelete = hitTest(tapped)
+                                            selectedId = featurePendingDelete?.id
+                                        }
                                     }
                                     true
                                 }
@@ -402,6 +409,14 @@ fun GeologicalMapScreen(
                         Text(pin.notes.ifBlank { "No general notes" }, style = MaterialTheme.typography.bodySmall, maxLines = 3)
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             TextButton(onClick = { response?.let(onViewResponse) }, enabled = response != null) { Text("Details") }
+                            TextButton(
+                                onClick = {
+                                    response?.let(onDeleteResponse)
+                                    selectedPin = null
+                                },
+                                enabled = response != null,
+                                colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                            ) { Text("Delete") }
                             TextButton(onClick = { selectedPin = null }) { Text("Close") }
                         }
                     }
@@ -431,6 +446,28 @@ fun GeologicalMapScreen(
                 else { checkpoint(); features = features.map { if (it.id == selectedId) it.copy(name = editorText) else it }; save() }
                 showFeatureEditor = false
             }) { Text("Save") } }, dismissButton = { TextButton(onClick = { showFeatureEditor = false }) { Text("Cancel") } })
+    }
+    featurePendingDelete?.let { feature ->
+        AlertDialog(
+            onDismissRequest = { featurePendingDelete = null },
+            title = { Text("Delete map feature?") },
+            text = { Text("Delete \"${feature.name}\" from this map? This cannot be undone.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        checkpoint()
+                        features = features.filterNot { it.id == feature.id }
+                        if (selectedId == feature.id) selectedId = null
+                        featurePendingDelete = null
+                        save()
+                    },
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                ) { Text("Delete") }
+            },
+            dismissButton = {
+                TextButton(onClick = { featurePendingDelete = null }) { Text("Cancel") }
+            }
+        )
     }
 }
 
