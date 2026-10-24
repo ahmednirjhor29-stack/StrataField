@@ -40,6 +40,8 @@ import org.maplibre.android.style.layers.PropertyFactory.*
 import org.maplibre.android.style.layers.Property
 import org.maplibre.android.style.sources.GeoJsonSource
 import okhttp3.Cache
+import okhttp3.ConnectionPool
+import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
 import java.io.File
 import java.util.UUID
@@ -70,7 +72,7 @@ fun GeologicalMapScreen(
     var mapView by remember { mutableStateOf<MapView?>(null) }
     var httpConfigured by remember { mutableStateOf(false) }
     var mapReady by remember { mutableStateOf(false) }
-    var mapRendered by remember { mutableStateOf(false) }
+    var firstFrameRendered by remember { mutableStateOf(false) }
     var mapLoadError by remember { mutableStateOf<String?>(null) }
     var mapTimedOut by remember { mutableStateOf(false) }
     var hasInternet by remember { mutableStateOf(hasValidatedInternet(context)) }
@@ -95,7 +97,7 @@ fun GeologicalMapScreen(
                     hasInternet = available
                     if (available) {
                         mapReady = false
-                        mapRendered = false
+                        firstFrameRendered = false
                         mapLoadError = null
                         cameraInitialized = false
                         mapReloadToken++
@@ -117,11 +119,11 @@ fun GeologicalMapScreen(
         onDispose { runCatching { connectivityManager?.unregisterNetworkCallback(callback) } }
     }
 
-    LaunchedEffect(hasInternet, mapReady, mapRendered, mapReloadToken) {
+    LaunchedEffect(hasInternet, firstFrameRendered, mapReloadToken) {
         mapTimedOut = false
-        if (hasInternet && mapReady && !mapRendered) {
-            delay(15_000)
-            if (!mapRendered) mapTimedOut = true
+        if (hasInternet && !firstFrameRendered) {
+            delay(10_000)
+            if (!firstFrameRendered) mapTimedOut = true
         }
     }
 
@@ -219,19 +221,27 @@ fun GeologicalMapScreen(
                 factory = { ctx ->
                     MapLibre.getInstance(ctx)
                     if (!httpConfigured) {
-                        val cache = Cache(File(ctx.cacheDir, "osm-tile-cache"), 64L * 1024L * 1024L)
+                        val dispatcher = Dispatcher().apply {
+                            maxRequests = 24
+                            maxRequestsPerHost = 8
+                        }
+                        val cache = Cache(File(ctx.cacheDir, "osm-tile-cache"), 256L * 1024L * 1024L)
                         val client = OkHttpClient.Builder().cache(cache).addInterceptor { chain ->
                             chain.proceed(chain.request().newBuilder().header("User-Agent", "StrataField/1.0.0 (Android geological field mapping)").build())
-                        }.build()
+                        }.dispatcher(dispatcher)
+                            .connectionPool(ConnectionPool(8, 5, java.util.concurrent.TimeUnit.MINUTES))
+                            .retryOnConnectionFailure(true)
+                            .build()
                         HttpRequestUtil.setOkHttpClient(client)
                         httpConfigured = true
                     }
                     MapView(ctx).also { view ->
                         mapView = view
-                        mapRendered = false
+                        firstFrameRendered = false
                         mapLoadError = null
-                        view.addOnDidFinishRenderingMapListener { fully ->
-                            if (fully) mapRendered = true
+                        view.addOnDidFinishRenderingMapListener { _ ->
+                            // Reveal the map as soon as the first frame is drawn; vector tiles can continue loading.
+                            firstFrameRendered = true
                         }
                         view.addOnDidFailLoadingMapListener { error ->
                             mapReady = false
@@ -242,7 +252,7 @@ fun GeologicalMapScreen(
                         view.onResume()
                         view.getMapAsync { map ->
                             mapHandle = map
-                            map.setStyle(Style.Builder().fromUri(OPENFREEMAP_STYLE_URL)) { style ->
+                            map.setStyle(Style.Builder().fromUri("asset://openfreemap-positron.json")) { style ->
                                 style.addSource(GeoJsonSource("geology", GeologicalMapData.toGeoJson(features)))
                                 style.addSource(GeoJsonSource("form-pins", pinsGeoJson(pins)))
                                 style.addLayer(FillLayer("geology-fill", "geology").withProperties(fillColor(org.maplibre.android.style.expressions.Expression.get("color")), fillOpacity(0f)))
@@ -331,8 +341,9 @@ fun GeologicalMapScreen(
             val statusMessage = when {
                 !hasInternet -> "No internet connection. Connect and retry to load the online map."
                 mapLoadError != null -> "The map could not be loaded. Check your connection and retry."
+                mapTimedOut && !mapReady -> "The online map style could not finish loading. Check your connection and retry."
                 mapTimedOut -> "Map tiles are taking too long to load. Check your connection and retry."
-                !mapRendered -> "Loading map…"
+                !firstFrameRendered -> "Loading map…"
                 else -> null
             }
             if (statusMessage != null) {
@@ -346,10 +357,10 @@ fun GeologicalMapScreen(
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Text(statusMessage, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
-                        if (!mapRendered) {
+                        if (!firstFrameRendered) {
                             TextButton(onClick = {
                                 mapReady = false
-                                mapRendered = false
+                                firstFrameRendered = false
                                 mapTimedOut = false
                                 mapLoadError = null
                                 cameraInitialized = false
@@ -403,8 +414,6 @@ private fun distanceMeters(a: GeoPoint, b: GeoPoint): Double {
     val h = kotlin.math.sin(dLat / 2) * kotlin.math.sin(dLat / 2) + kotlin.math.cos(Math.toRadians(a.latitude)) * kotlin.math.cos(Math.toRadians(b.latitude)) * kotlin.math.sin(dLon / 2) * kotlin.math.sin(dLon / 2)
     return 12_742_000.0 * kotlin.math.asin(kotlin.math.sqrt(h))
 }
-
-private const val OPENFREEMAP_STYLE_URL = "https://tiles.openfreemap.org/styles/positron"
 
 private fun hasValidatedInternet(context: android.content.Context): Boolean {
     val connectivityManager = context.getSystemService(ConnectivityManager::class.java) ?: return false
