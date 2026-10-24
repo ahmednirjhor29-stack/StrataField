@@ -1,6 +1,11 @@
 package com.stratafield.app.ui.components
 
 import android.view.MotionEvent
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.os.Handler
+import android.os.Looper
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -18,6 +23,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import kotlinx.coroutines.delay
 import com.google.gson.JsonParser
 import com.stratafield.app.data.model.FormResponse
 import org.maplibre.android.MapLibre
@@ -64,6 +70,11 @@ fun GeologicalMapScreen(
     var mapView by remember { mutableStateOf<MapView?>(null) }
     var httpConfigured by remember { mutableStateOf(false) }
     var mapReady by remember { mutableStateOf(false) }
+    var mapRendered by remember { mutableStateOf(false) }
+    var mapLoadError by remember { mutableStateOf<String?>(null) }
+    var mapTimedOut by remember { mutableStateOf(false) }
+    var hasInternet by remember { mutableStateOf(hasValidatedInternet(context)) }
+    var mapReloadToken by remember { mutableIntStateOf(0) }
     var mapHandle by remember { mutableStateOf<org.maplibre.android.maps.MapLibreMap?>(null) }
     var editorText by remember { mutableStateOf("") }
     var showFeatureEditor by remember { mutableStateOf(false) }
@@ -73,6 +84,45 @@ fun GeologicalMapScreen(
     val redo = remember { mutableStateListOf<String>() }
     val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/geo+json")) { uri ->
         if (uri != null) runCatching { context.contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { it.write(GeologicalMapData.toGeoJson(features)) } }
+    }
+
+    DisposableEffect(context) {
+        val connectivityManager = context.getSystemService(ConnectivityManager::class.java)
+        val mainHandler = Handler(Looper.getMainLooper())
+        fun refreshConnection(available: Boolean = hasValidatedInternet(context)) {
+            mainHandler.post {
+                if (hasInternet != available) {
+                    hasInternet = available
+                    if (available) {
+                        mapReady = false
+                        mapRendered = false
+                        mapLoadError = null
+                        cameraInitialized = false
+                        mapReloadToken++
+                    }
+                }
+            }
+        }
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) = refreshConnection()
+            override fun onLost(network: Network) = refreshConnection()
+            override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
+                refreshConnection(
+                    capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                        capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+                )
+            }
+        }
+        runCatching { connectivityManager?.registerDefaultNetworkCallback(callback) }
+        onDispose { runCatching { connectivityManager?.unregisterNetworkCallback(callback) } }
+    }
+
+    LaunchedEffect(hasInternet, mapReady, mapRendered, mapReloadToken) {
+        mapTimedOut = false
+        if (hasInternet && mapReady && !mapRendered) {
+            delay(15_000)
+            if (!mapRendered) mapTimedOut = true
+        }
     }
 
     fun checkpoint() { undo.add(GeologicalMapData.toGeoJson(features)); if (undo.size > 40) undo.removeAt(0); redo.clear() }
@@ -163,10 +213,10 @@ fun GeologicalMapScreen(
             }
         }
         Box(Modifier.weight(1f).fillMaxWidth()) {
+            key(mapReloadToken) {
             AndroidView(
                 modifier = Modifier.fillMaxSize(),
                 factory = { ctx ->
-                    MapLibre.getInstance(ctx)
                     if (!httpConfigured) {
                         val cache = Cache(File(ctx.cacheDir, "osm-tile-cache"), 64L * 1024L * 1024L)
                         val client = OkHttpClient.Builder().cache(cache).addInterceptor { chain ->
@@ -175,14 +225,24 @@ fun GeologicalMapScreen(
                         HttpRequestUtil.setOkHttpClient(client)
                         httpConfigured = true
                     }
+                    MapLibre.getInstance(ctx)
                     MapView(ctx).also { view ->
                         mapView = view
+                        mapRendered = false
+                        mapLoadError = null
+                        view.addOnDidFinishRenderingMapListener { fully ->
+                            if (fully) mapRendered = true
+                        }
+                        view.addOnDidFailLoadingMapListener { error ->
+                            mapReady = false
+                            mapLoadError = error
+                        }
                         view.onCreate(null)
                         view.onStart()
                         view.onResume()
                         view.getMapAsync { map ->
                             mapHandle = map
-                            map.setStyle(Style.Builder().fromJson(osmStyleJson())) { style ->
+                            map.setStyle(Style.Builder().fromUri(OPENFREEMAP_STYLE_URL)) { style ->
                                 style.addSource(GeoJsonSource("geology", GeologicalMapData.toGeoJson(features)))
                                 style.addSource(GeoJsonSource("form-pins", pinsGeoJson(pins)))
                                 style.addLayer(FillLayer("geology-fill", "geology").withProperties(fillColor(org.maplibre.android.style.expressions.Expression.get("color")), fillOpacity(0f)))
@@ -243,6 +303,7 @@ fun GeologicalMapScreen(
                                     false
                                 }
                                 mapReady = true
+                                mapLoadError = null
                                 if (!cameraInitialized) {
                                     val initialTarget = pins.firstOrNull()?.point?.let { LatLng(it.latitude, it.longitude) }
                                         ?: LatLng(20.0, 0.0)
@@ -266,10 +327,43 @@ fun GeologicalMapScreen(
                     }
                 }
             )
+            }
+            val statusMessage = when {
+                !hasInternet -> "No internet connection. Connect and retry to load the online map."
+                mapLoadError != null -> "The map could not be loaded. Check your connection and retry."
+                mapTimedOut -> "Map tiles are taking too long to load. Check your connection and retry."
+                !mapRendered -> "Loading map…"
+                else -> null
+            }
+            if (statusMessage != null) {
+                Card(
+                    modifier = Modifier.align(Alignment.TopCenter).padding(12.dp).fillMaxWidth(.92f),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = .96f))
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(start = 12.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(statusMessage, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                        if (!mapRendered) {
+                            TextButton(onClick = {
+                                mapReady = false
+                                mapRendered = false
+                                mapTimedOut = false
+                                mapLoadError = null
+                                cameraInitialized = false
+                                mapReloadToken++
+                            }, enabled = hasInternet) { Text("Retry") }
+                        }
+                    }
+                }
+            }
             // Independent pins are rendered from saved forms and never written into the editable layer.
             Column(Modifier.align(Alignment.BottomStart).padding(8.dp)) {
                 Text("© OpenStreetMap contributors", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.background(MaterialTheme.colorScheme.surface.copy(alpha = .88f), RoundedCornerShape(6.dp)).padding(horizontal = 7.dp, vertical = 4.dp))
-                Text("Map tiles: tile.openstreetmap.org", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 4.dp))
+                Text("\u00a9 OpenFreeMap · \u00a9 OpenMapTiles", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.background(MaterialTheme.colorScheme.surface.copy(alpha = .88f), RoundedCornerShape(6.dp)).padding(horizontal = 7.dp, vertical = 4.dp))
+                Text("Map tiles: OpenFreeMap", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 4.dp))
             }
             selectedPin?.let { pin ->
                 val response = responses.firstOrNull { it.id == pin.responseId }
@@ -310,7 +404,15 @@ private fun distanceMeters(a: GeoPoint, b: GeoPoint): Double {
     return 12_742_000.0 * kotlin.math.asin(kotlin.math.sqrt(h))
 }
 
-private fun osmStyleJson() = """{"version":8,"sources":{"osm":{"type":"raster","tiles":["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],"tileSize":256,"attribution":"© OpenStreetMap contributors"}},"layers":[{"id":"osm-raster","type":"raster","source":"osm","minzoom":0,"maxzoom":19}]}"""
+private const val OPENFREEMAP_STYLE_URL = "https://tiles.openfreemap.org/styles/positron"
+
+private fun hasValidatedInternet(context: android.content.Context): Boolean {
+    val connectivityManager = context.getSystemService(ConnectivityManager::class.java) ?: return false
+    val network = connectivityManager.activeNetwork ?: return false
+    val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return false
+    return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+        capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+}
 
 private fun pinsGeoJson(pins: List<SurveyMapPin>): String = com.google.gson.Gson().toJson(com.google.gson.JsonObject().apply {
     addProperty("type", "FeatureCollection")
