@@ -31,6 +31,7 @@ import org.maplibre.android.style.layers.FillLayer
 import org.maplibre.android.style.layers.LineLayer
 import org.maplibre.android.style.layers.SymbolLayer
 import org.maplibre.android.style.layers.PropertyFactory.*
+import org.maplibre.android.style.layers.Property
 import org.maplibre.android.style.sources.GeoJsonSource
 import okhttp3.Cache
 import okhttp3.OkHttpClient
@@ -109,7 +110,7 @@ fun GeologicalMapScreen(
     }
     LaunchedEffect(visible, mapReady) {
         mapHandle?.getStyle { style ->
-            val layerVisibility = if (visible) "visible" else "none"
+            val layerVisibility = if (visible) Property.VISIBLE else Property.NONE
             listOf("geology-fill", "geology-lines", "geology-points", "geology-labels").forEach { style.getLayer(it)?.setProperties(visibility(layerVisibility)) }
         }
     }
