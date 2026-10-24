@@ -273,6 +273,18 @@ interface DrawingDao {
 }
 
 @Dao
+interface GeologicalMapLayerDao {
+    @Query("SELECT * FROM geological_map_layers WHERE projectId = :projectId")
+    fun get(projectId: Long): Flow<GeologicalMapLayer?>
+
+    @Query("SELECT * FROM geological_map_layers WHERE projectId = :projectId")
+    suspend fun getOnce(projectId: Long): GeologicalMapLayer?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun save(layer: GeologicalMapLayer)
+}
+
+@Dao
 interface SyncLogDao {
     @Query("SELECT * FROM sync_logs ORDER BY timestamp DESC LIMIT 100")
     fun getRecent(): Flow<List<SyncLog>>
@@ -296,9 +308,10 @@ interface SyncLogDao {
         FormResponse::class,
         ImageAttachment::class,
         Drawing::class,
-        SyncLog::class
+        SyncLog::class,
+        GeologicalMapLayer::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -312,4 +325,5 @@ abstract class StrataFieldDatabase : RoomDatabase() {
     abstract fun imageAttachmentDao(): ImageAttachmentDao
     abstract fun drawingDao(): DrawingDao
     abstract fun syncLogDao(): SyncLogDao
+    abstract fun geologicalMapLayerDao(): GeologicalMapLayerDao
 }

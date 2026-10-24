@@ -2,6 +2,8 @@ package com.stratafield.app.data.repository
 
 import android.content.Context
 import androidx.room.Room
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import com.stratafield.app.data.db.StrataFieldDatabase
@@ -14,7 +16,7 @@ class StrataFieldRepository private constructor(context: Context) {
         context.applicationContext,
         StrataFieldDatabase::class.java,
         "stratafield.db"
-    ).build()
+    ).addMigrations(MIGRATION_1_2).build()
 
     private val gson = Gson()
 
@@ -92,6 +94,16 @@ class StrataFieldRepository private constructor(context: Context) {
     suspend fun insertDrawing(drawing: Drawing): Long = db.drawingDao().insert(drawing)
     suspend fun updateDrawing(drawing: Drawing) = db.drawingDao().update(drawing)
     suspend fun deleteDrawing(drawing: Drawing) = db.drawingDao().delete(drawing)
+
+    // ============ GEOLOGICAL MAP LAYER ============
+    fun getGeologicalMapLayer(projectId: Long): Flow<GeologicalMapLayer?> = db.geologicalMapLayerDao().get(projectId)
+    suspend fun saveGeologicalMapLayer(layer: GeologicalMapLayer) = db.geologicalMapLayerDao().save(layer)
+
+    suspend fun ensureGeologicalMapLayer(projectId: Long): GeologicalMapLayer {
+        val existing = db.geologicalMapLayerDao().getOnce(projectId)
+        if (existing != null) return existing
+        return GeologicalMapLayer(projectId).also { db.geologicalMapLayerDao().save(it) }
+    }
 
     // ============ SYNC LOGS ============
     fun getRecentSyncLogs(): Flow<List<SyncLog>> = db.syncLogDao().getRecent()
@@ -189,6 +201,11 @@ class StrataFieldRepository private constructor(context: Context) {
     fun serializeResponseData(data: Map<String, String>): String = gson.toJson(data)
 
     companion object {
+        private val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("CREATE TABLE IF NOT EXISTS geological_map_layers (projectId INTEGER NOT NULL, geoJson TEXT NOT NULL, visible INTEGER NOT NULL, updatedAt INTEGER NOT NULL, PRIMARY KEY(projectId), FOREIGN KEY(projectId) REFERENCES projects(id) ON UPDATE NO ACTION ON DELETE CASCADE)")
+            }
+        }
         @Volatile
         private var instance: StrataFieldRepository? = null
 

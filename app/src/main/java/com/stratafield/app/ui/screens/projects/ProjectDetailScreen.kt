@@ -49,11 +49,12 @@ fun ProjectDetailScreen(
     val sites by viewModel.projectSites.collectAsState()
     val trenches by viewModel.projectTrenches.collectAsState()
     val responses by viewModel.projectResponses.collectAsState()
+    val geologicalMapLayer by viewModel.geologicalMapLayer.collectAsState()
     val trenchDist by viewModel.trenchDistribution.collectAsState()
     val dailyProgress by viewModel.dailyProgress.collectAsState()
 
     var selectedTab by remember { mutableStateOf(0) }
-    var surveySubTab by remember { mutableStateOf(0) } // 0 = Survey Data, 1 = Sites
+    var surveySubTab by remember { mutableStateOf(0) } // 0 = Survey Data, 1 = Map
     var showNewSite by remember { mutableStateOf(false) }
     var showExportDialog by remember { mutableStateOf(false) }
     var exporting by remember { mutableStateOf(false) }
@@ -96,13 +97,11 @@ fun ProjectDetailScreen(
                 FloatingActionButton(
                     onClick = {
                         when (selectedTab) {
-                            1 -> if (surveySubTab == 0) {
+                            1 -> {
                                 scope.launch {
                                     editingFormResponse = null
                                     activeFormTemplate = viewModel.getOrCreateProjectFormTemplate(FormType.SURVEY)
                                 }
-                            } else {
-                                showNewSite = true
                             }
                             2 -> scope.launch {
                                 editingFormResponse = null
@@ -173,8 +172,10 @@ fun ProjectDetailScreen(
                     subTab = surveySubTab,
                     onSubTabChange = { surveySubTab = it },
                     surveyResponses = surveyResponses,
-                    sites = sites,
-                    onAddSite = { showNewSite = true },
+                    projectId = projectId,
+                    mapGeoJson = geologicalMapLayer?.geoJson ?: "{\"type\":\"FeatureCollection\",\"features\":[]}",
+                    mapLayerVisible = geologicalMapLayer?.visible ?: true,
+                    onSaveMapLayer = { geoJson, visible -> viewModel.saveGeologicalMapLayer(projectId, geoJson, visible) },
                     onResponseClick = ::viewResponse,
                     onResponseEdit = { response ->
                         scope.launch {
@@ -669,8 +670,10 @@ private fun SurveyTab(
     subTab: Int,
     onSubTabChange: (Int) -> Unit,
     surveyResponses: List<FormResponse>,
-    sites: List<Site>,
-    onAddSite: () -> Unit,
+    projectId: Long,
+    mapGeoJson: String,
+    mapLayerVisible: Boolean,
+    onSaveMapLayer: (String, Boolean) -> Unit,
     onResponseClick: (FormResponse) -> Unit,
     onResponseEdit: (FormResponse) -> Unit
 ) {
@@ -681,7 +684,7 @@ private fun SurveyTab(
                 .padding(horizontal = 16.dp, vertical = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            listOf("Survey Data", "Sites").forEachIndexed { index, label ->
+            listOf("Survey Data", "Map").forEachIndexed { index, label ->
                 FilterChip(
                     selected = subTab == index,
                     onClick = { onSubTabChange(index) },
@@ -700,7 +703,14 @@ private fun SurveyTab(
         if (subTab == 0) {
             FormsTab(responses = surveyResponses, onAdd = {}, onResponseClick = onResponseClick, onResponseEdit = onResponseEdit)
         } else {
-            SitesTab(sites = sites, onAdd = onAddSite)
+            GeologicalMapScreen(
+                projectId = projectId,
+                responses = surveyResponses,
+                savedGeoJson = mapGeoJson,
+                layerVisible = mapLayerVisible,
+                onSaveLayer = onSaveMapLayer,
+                onViewResponse = onResponseClick
+            )
         }
     }
 }

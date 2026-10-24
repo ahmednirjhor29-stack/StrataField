@@ -54,6 +54,17 @@ data class Project(
     val updatedAt: Long = System.currentTimeMillis()
 )
 
+/** Project-owned geological overlay; GeoJSON coordinates remain independent of map tiles. */
+@Entity(tableName = "geological_map_layers", foreignKeys = [ForeignKey(
+    entity = Project::class, parentColumns = ["id"], childColumns = ["projectId"], onDelete = ForeignKey.CASCADE
+)])
+data class GeologicalMapLayer(
+    @PrimaryKey val projectId: Long,
+    val geoJson: String = "{\"type\":\"FeatureCollection\",\"features\":[]}",
+    val visible: Boolean = true,
+    val updatedAt: Long = System.currentTimeMillis()
+)
+
 // ============ SURVEY ============
 
 @Entity(

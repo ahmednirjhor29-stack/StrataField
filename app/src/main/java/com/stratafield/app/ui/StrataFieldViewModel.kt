@@ -83,6 +83,9 @@ class StrataFieldViewModel(application: Application) : AndroidViewModel(applicat
     private val _projectResponses = MutableStateFlow<List<FormResponse>>(emptyList())
     val projectResponses: StateFlow<List<FormResponse>> = _projectResponses.asStateFlow()
 
+    private val _geologicalMapLayer = MutableStateFlow<GeologicalMapLayer?>(null)
+    val geologicalMapLayer: StateFlow<GeologicalMapLayer?> = _geologicalMapLayer.asStateFlow()
+
     private val _trenchDistribution = MutableStateFlow<List<TrenchDistribution>>(emptyList())
     val trenchDistribution: StateFlow<List<TrenchDistribution>> = _trenchDistribution.asStateFlow()
 
@@ -106,6 +109,16 @@ class StrataFieldViewModel(application: Application) : AndroidViewModel(applicat
         }
         viewModelScope.launch {
             repository.getResponsesByProject(projectId).collect { _projectResponses.value = it }
+        }
+        viewModelScope.launch {
+            repository.ensureGeologicalMapLayer(projectId)
+            repository.getGeologicalMapLayer(projectId).collect { _geologicalMapLayer.value = it }
+        }
+    }
+
+    fun saveGeologicalMapLayer(projectId: Long, geoJson: String, visible: Boolean) {
+        viewModelScope.launch {
+            repository.saveGeologicalMapLayer(GeologicalMapLayer(projectId, geoJson, visible))
         }
     }
 
