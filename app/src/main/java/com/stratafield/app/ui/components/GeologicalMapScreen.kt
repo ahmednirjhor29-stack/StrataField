@@ -1,11 +1,13 @@
 package com.stratafield.app.ui.components
 
 import android.view.MotionEvent
+import android.net.Uri
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.os.Handler
 import android.os.Looper
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -24,6 +26,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import com.google.gson.JsonParser
 import com.stratafield.app.data.model.FormResponse
 import org.maplibre.android.MapLibre
@@ -62,6 +67,7 @@ fun GeologicalMapScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val pins = remember(responses) { GeologicalMapData.surveyPins(responses) }
     var features by remember(projectId) { mutableStateOf(GeologicalMapData.fromGeoJson(savedGeoJson)) }
     var visible by remember(projectId) { mutableStateOf(layerVisible) }
@@ -87,6 +93,66 @@ fun GeologicalMapScreen(
     var cameraInitialized by remember { mutableStateOf(false) }
     val undo = remember { mutableStateListOf<String>() }
     val redo = remember { mutableStateListOf<String>() }
+    val mapFilePreferences = remember(context) {
+        context.getSharedPreferences("geological_map_files", android.content.Context.MODE_PRIVATE)
+    }
+    var savedMapFileUri by remember(projectId) {
+        mutableStateOf(mapFilePreferences.getString(projectId.toString(), null))
+    }
+    var savingMapFile by remember { mutableStateOf(false) }
+
+    fun writeMapFile(uri: Uri, json: String, saveAsProjectDestination: Boolean) {
+        scope.launch {
+            savingMapFile = true
+            val result = runCatching {
+                withContext(Dispatchers.IO) {
+                    context.contentResolver.openOutputStream(uri, "wt")
+                        ?.bufferedWriter(Charsets.UTF_8)
+                        ?.use { it.write(json) }
+                        ?: error("The selected file could not be opened for writing.")
+                }
+            }
+            savingMapFile = false
+            if (result.isSuccess) {
+                if (saveAsProjectDestination) {
+                    runCatching {
+                        context.contentResolver.takePersistableUriPermission(
+                            uri,
+                            android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                                android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                        )
+                    }
+                    mapFilePreferences.edit().putString(projectId.toString(), uri.toString()).apply()
+                    savedMapFileUri = uri.toString()
+                }
+                Toast.makeText(context, "Map saved to ${uri.lastPathSegment ?: "file"}", Toast.LENGTH_SHORT).show()
+            } else {
+                if (!saveAsProjectDestination) {
+                    mapFilePreferences.edit().remove(projectId.toString()).apply()
+                    savedMapFileUri = null
+                }
+                Toast.makeText(
+                    context,
+                    if (saveAsProjectDestination) "Could not save the map file" else "Could not update the saved file. Tap Save to choose a new location.",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+    }
+    val saveMapFileLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/geo+json")) { uri ->
+        if (uri != null) writeMapFile(uri, GeologicalMapData.toGeoJson(features), saveAsProjectDestination = true)
+    }
+
+    fun saveMapFile() {
+        val json = GeologicalMapData.toGeoJson(features)
+        onSaveLayer(json, visible)
+        val uri = savedMapFileUri?.let(Uri::parse)
+        if (uri == null) {
+            saveMapFileLauncher.launch("project-$projectId-map.geojson")
+        } else {
+            writeMapFile(uri, json, saveAsProjectDestination = false)
+        }
+    }
     val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/geo+json")) { uri ->
         if (uri != null) runCatching { context.contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { it.write(GeologicalMapData.toGeoJson(features)) } }
     }
@@ -195,6 +261,13 @@ fun GeologicalMapScreen(
             item { IconButton(onClick = { if (undo.isNotEmpty()) { redo.add(GeologicalMapData.toGeoJson(features)); features = GeologicalMapData.fromGeoJson(undo.removeAt(undo.lastIndex)); save() } }, enabled = undo.isNotEmpty()) { Icon(Icons.Default.Undo, "Undo") } }
             item { IconButton(onClick = { if (redo.isNotEmpty()) { undo.add(GeologicalMapData.toGeoJson(features)); features = GeologicalMapData.fromGeoJson(redo.removeAt(redo.lastIndex)); save() } }, enabled = redo.isNotEmpty()) { Icon(Icons.Default.Redo, "Redo") } }
             item { IconButton(onClick = { visible = !visible; save() }) { Icon(if (visible) Icons.Default.Visibility else Icons.Default.VisibilityOff, "Toggle geological layer") } }
+            item {
+                TextButton(onClick = ::saveMapFile, enabled = !savingMapFile) {
+                    Icon(Icons.Filled.Save, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text(if (savingMapFile) "Saving…" else "Save")
+                }
+            }
             item { IconButton(onClick = { exportLauncher.launch("project-$projectId-map.geojson") }) { Icon(Icons.Default.FileDownload, "Export GeoJSON") } }
             if (mode == MapMode.DRAW && draft.isNotEmpty()) item {
                 TextButton(onClick = {
