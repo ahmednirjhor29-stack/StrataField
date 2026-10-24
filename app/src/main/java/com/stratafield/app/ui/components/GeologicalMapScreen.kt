@@ -75,7 +75,8 @@ fun GeologicalMapScreen(
     var firstFrameRendered by remember { mutableStateOf(false) }
     var mapLoadError by remember { mutableStateOf<String?>(null) }
     var mapTimedOut by remember { mutableStateOf(false) }
-    var hasInternet by remember { mutableStateOf(hasValidatedInternet(context)) }
+    val internetState = remember { mutableStateOf(hasValidatedInternet(context)) }
+    var hasInternet by internetState
     var mapReloadToken by remember { mutableIntStateOf(0) }
     var mapHandle by remember { mutableStateOf<org.maplibre.android.maps.MapLibreMap?>(null) }
     var editorText by remember { mutableStateOf("") }
@@ -93,14 +94,11 @@ fun GeologicalMapScreen(
         val mainHandler = Handler(Looper.getMainLooper())
         fun refreshConnection(available: Boolean = hasValidatedInternet(context)) {
             mainHandler.post {
-                if (hasInternet != available) {
-                    hasInternet = available
+                if (internetState.value != available) {
+                    internetState.value = available
                     if (available) {
-                        mapReady = false
-                        firstFrameRendered = false
                         mapLoadError = null
-                        cameraInitialized = false
-                        mapReloadToken++
+                        mapTimedOut = false
                     }
                 }
             }
@@ -220,27 +218,44 @@ fun GeologicalMapScreen(
                 modifier = Modifier.fillMaxSize(),
                 factory = { ctx ->
                     MapLibre.getInstance(ctx)
+                    HttpRequestUtil.setLogEnabled(true)
+                    HttpRequestUtil.setPrintRequestUrlOnFailure(true)
                     if (!httpConfigured) {
                         val dispatcher = Dispatcher().apply {
                             maxRequests = 24
-                            maxRequestsPerHost = 8
+                            maxRequestsPerHost = 20
                         }
                         val cache = Cache(File(ctx.cacheDir, "osm-tile-cache"), 256L * 1024L * 1024L)
                         val client = OkHttpClient.Builder().cache(cache).addInterceptor { chain ->
-                            chain.proceed(chain.request().newBuilder().header("User-Agent", "StrataField/1.0.0 (Android geological field mapping)").build())
+                            val request = chain.request().newBuilder().header("User-Agent", "StrataField/1.0.0 (Android geological field mapping)").build()
+                            val startedAt = System.nanoTime()
+                            try {
+                                val response = chain.proceed(request)
+                                if (!response.isSuccessful) {
+                                    android.util.Log.w("StrataMapNetwork", "HTTP ${response.code} in ${(System.nanoTime() - startedAt) / 1_000_000}ms ${request.url.host}${request.url.encodedPath}")
+                                }
+                                response
+                            } catch (error: java.io.IOException) {
+                                android.util.Log.e("StrataMapNetwork", "request failed after ${(System.nanoTime() - startedAt) / 1_000_000}ms ${request.url.host}${request.url.encodedPath}: ${error.javaClass.simpleName}: ${error.message}")
+                                throw error
+                            }
                         }.dispatcher(dispatcher)
                             .connectionPool(ConnectionPool(8, 5, java.util.concurrent.TimeUnit.MINUTES))
+                            .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+                            .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
                             .retryOnConnectionFailure(true)
                             .build()
                         HttpRequestUtil.setOkHttpClient(client)
                         httpConfigured = true
                     }
                     MapView(ctx).also { view ->
+                        android.util.Log.i("StrataMapLifecycle", "create MapView reload=$mapReloadToken")
                         mapView = view
                         firstFrameRendered = false
                         mapLoadError = null
                         view.addOnDidFinishRenderingMapListener { _ ->
                             // Reveal the map as soon as the first frame is drawn; vector tiles can continue loading.
+                            android.util.Log.d("StrataMapLifecycle", "MapView rendered a frame")
                             firstFrameRendered = true
                         }
                         view.addOnDidFailLoadingMapListener { error ->
@@ -252,15 +267,17 @@ fun GeologicalMapScreen(
                         view.onResume()
                         view.getMapAsync { map ->
                             mapHandle = map
-                            map.setStyle(Style.Builder().fromUri("asset://openfreemap-positron.json")) { style ->
+                            val bundledStyle = ctx.assets.open("openfreemap-positron.json").bufferedReader().use { it.readText() }
+                            map.setStyle(Style.Builder().fromJson(bundledStyle)) { style ->
+                                android.util.Log.i("StrataMapLifecycle", "style loaded")
                                 style.addSource(GeoJsonSource("geology", GeologicalMapData.toGeoJson(features)))
                                 style.addSource(GeoJsonSource("form-pins", pinsGeoJson(pins)))
                                 style.addLayer(FillLayer("geology-fill", "geology").withProperties(fillColor(org.maplibre.android.style.expressions.Expression.get("color")), fillOpacity(0f)))
                                 style.addLayer(LineLayer("geology-lines", "geology").withProperties(lineColor(org.maplibre.android.style.expressions.Expression.get("color")), lineWidth(3.0f)))
                                 style.addLayer(CircleLayer("geology-points", "geology").withProperties(circleRadius(7f), circleColor(org.maplibre.android.style.expressions.Expression.get("color")), circleStrokeColor("#FFFFFF"), circleStrokeWidth(2f)))
-                                style.addLayer(SymbolLayer("geology-labels", "geology").withProperties(textField(org.maplibre.android.style.expressions.Expression.get("name")), textSize(10f), textColor("#263238"), textHaloColor("#FFFFFF"), textHaloWidth(1.5f), textOffset(arrayOf(0f, 1.1f))))
+                                style.addLayer(SymbolLayer("geology-labels", "geology").withProperties(textField(org.maplibre.android.style.expressions.Expression.get("name")), textFont(arrayOf("Noto Sans Regular")), textSize(10f), textColor("#263238"), textHaloColor("#FFFFFF"), textHaloWidth(1.5f), textOffset(arrayOf(0f, 1.1f))))
                                 style.addLayer(CircleLayer("form-pin-circles", "form-pins").withProperties(circleRadius(8f), circleColor("#1565C0"), circleStrokeColor("#FFFFFF"), circleStrokeWidth(2f)))
-                                style.addLayer(SymbolLayer("form-pin-labels", "form-pins").withProperties(textField(org.maplibre.android.style.expressions.Expression.get("name")), textSize(11f), textColor("#10243A"), textHaloColor("#FFFFFF"), textHaloWidth(1.5f), textOffset(arrayOf(0f, 1.2f))))
+                                style.addLayer(SymbolLayer("form-pin-labels", "form-pins").withProperties(textField(org.maplibre.android.style.expressions.Expression.get("name")), textFont(arrayOf("Noto Sans Regular")), textSize(11f), textColor("#10243A"), textHaloColor("#FFFFFF"), textHaloWidth(1.5f), textOffset(arrayOf(0f, 1.2f))))
                                 map.uiSettings.isRotateGesturesEnabled = true
                                 map.addOnMapClickListener { latLng ->
                                     val tapped = GeoPoint(latLng.longitude, latLng.latitude)
@@ -396,8 +413,15 @@ fun GeologicalMapScreen(
         }
     }
 
-    DisposableEffect(mapView) {
-        onDispose { mapView?.onPause(); mapView?.onStop(); mapView?.onDestroy(); mapView = null }
+    val activeMapView = mapView
+    DisposableEffect(activeMapView) {
+        onDispose {
+            activeMapView?.let { view ->
+                android.util.Log.i("StrataMapLifecycle", "destroy MapView")
+                view.onPause(); view.onStop(); view.onDestroy()
+            }
+            if (mapView === activeMapView) mapView = null
+        }
     }
     if (showFeatureEditor) {
         AlertDialog(onDismissRequest = { showFeatureEditor = false }, title = { Text("Feature name") },
