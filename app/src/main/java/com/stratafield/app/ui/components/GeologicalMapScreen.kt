@@ -6,6 +6,15 @@ import android.content.pm.PackageManager
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
+import android.graphics.Bitmap
+import android.graphics.Canvas as AndroidCanvas
+import android.graphics.Paint
+import android.graphics.Path as AndroidPath
+import android.graphics.Color as AndroidColor
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
 import android.net.Uri
 import android.net.ConnectivityManager
 import android.net.Network
@@ -130,6 +139,7 @@ fun GeologicalMapScreen(
     var saveFormatMenuExpanded by remember(projectId) { mutableStateOf(false) }
     var savingMapFile by remember { mutableStateOf(false) }
     var userLocation by remember { mutableStateOf<Location?>(null) }
+    var facingBearing by remember { mutableFloatStateOf(0f) }
     var locationPermissionGranted by remember {
         mutableStateOf(
             ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
@@ -151,21 +161,66 @@ fun GeologicalMapScreen(
         val locationManager = context.getSystemService(LocationManager::class.java)
         val fineGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
         val coarseGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
-        val listener = LocationListener { userLocation = it }
+        val listener = object : LocationListener {
+            override fun onLocationChanged(location: Location) {
+                val current = userLocation
+                val incomingAccuracy = if (location.hasAccuracy()) location.accuracy else Float.MAX_VALUE
+                val currentAccuracy = current?.let { if (it.hasAccuracy()) it.accuracy else Float.MAX_VALUE } ?: Float.MAX_VALUE
+                val currentIsStale = current == null || System.currentTimeMillis() - current.time > 8_000L
+                val isFresh = current == null || location.time >= current.time
+                val acceptableAccuracy = if (current == null) 100f else maxOf(12f, currentAccuracy * 1.5f)
+                if (isFresh && incomingAccuracy <= 100f && (currentIsStale || incomingAccuracy <= acceptableAccuracy || incomingAccuracy < currentAccuracy)) {
+                    userLocation = Location(location)
+                }
+            }
+        }
         if (fineGranted || coarseGranted) {
             runCatching {
                 val providers = locationManager?.getProviders(true).orEmpty().filter { provider ->
-                    provider == LocationManager.GPS_PROVIDER || provider == LocationManager.NETWORK_PROVIDER
+                    provider == LocationManager.NETWORK_PROVIDER || (fineGranted && provider == LocationManager.GPS_PROVIDER)
                 }
                 providers.forEach { provider ->
                     locationManager?.getLastKnownLocation(provider)?.let { cached ->
-                        if (userLocation == null || cached.time > (userLocation?.time ?: 0L)) userLocation = cached
+                        val recentEnough = System.currentTimeMillis() - cached.time <= 120_000L
+                        val accurateEnough = !cached.hasAccuracy() || cached.accuracy <= 100f
+                        if (recentEnough && accurateEnough && (userLocation == null || cached.time > (userLocation?.time ?: 0L))) userLocation = cached
                     }
-                    locationManager?.requestLocationUpdates(provider, 2_000L, 2f, listener, Looper.getMainLooper())
+                    locationManager?.requestLocationUpdates(provider, 1_000L, 0f, listener, Looper.getMainLooper())
                 }
             }
         }
         onDispose { runCatching { locationManager?.removeUpdates(listener) } }
+    }
+
+    DisposableEffect(context) {
+        val sensorManager = context.getSystemService(android.content.Context.SENSOR_SERVICE) as SensorManager
+        val rotationSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
+        val matrix = FloatArray(9)
+        val orientation = FloatArray(3)
+        var lastBearing = Float.NaN
+        val listener = object : SensorEventListener {
+            override fun onSensorChanged(event: SensorEvent) {
+                SensorManager.getRotationMatrixFromVector(matrix, event.values)
+                SensorManager.getOrientation(matrix, orientation)
+                val magneticBearing = Math.toDegrees(orientation[0].toDouble()).toFloat()
+                val declination = userLocation?.let { location ->
+                    android.hardware.GeomagneticField(
+                        location.latitude.toFloat(), location.longitude.toFloat(),
+                        if (location.hasAltitude()) location.altitude.toFloat() else 0f,
+                        System.currentTimeMillis()
+                    ).declination
+                } ?: 0f
+                val bearing = ((magneticBearing + declination) % 360f + 360f) % 360f
+                val difference = if (lastBearing.isNaN()) 360f else kotlin.math.abs((bearing - lastBearing + 540f) % 360f - 180f)
+                if (difference >= 2f) {
+                    lastBearing = bearing
+                    facingBearing = bearing
+                }
+            }
+            override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
+        }
+        rotationSensor?.let { sensorManager.registerListener(listener, it, SensorManager.SENSOR_DELAY_GAME) }
+        onDispose { sensorManager.unregisterListener(listener) }
     }
 
     fun writeMapFile(uri: Uri, content: String, format: MapFileFormat, saveAsProjectDestination: Boolean) {
@@ -292,17 +347,43 @@ fun GeologicalMapScreen(
     fun hitTest(point: GeoPoint): GeoFeature? {
         val map = mapHandle ?: return null
         val tapped = map.projection.toScreenLocation(LatLng(point.latitude, point.longitude))
-        return features.minByOrNull { feature ->
-            feature.points.minOf { vertex ->
-                val screen = map.projection.toScreenLocation(LatLng(vertex.latitude, vertex.longitude))
-                kotlin.math.hypot((screen.x - tapped.x).toDouble(), (screen.y - tapped.y).toDouble())
-            }
-        }?.takeIf { feature ->
-            feature.points.minOf { vertex ->
-                val screen = map.projection.toScreenLocation(LatLng(vertex.latitude, vertex.longitude))
-                kotlin.math.hypot((screen.x - tapped.x).toDouble(), (screen.y - tapped.y).toDouble())
-            } < 36.0
+        fun screenDistance(a: GeoPoint, b: GeoPoint): Double {
+            val first = map.projection.toScreenLocation(LatLng(a.latitude, a.longitude))
+            val second = map.projection.toScreenLocation(LatLng(b.latitude, b.longitude))
+            return kotlin.math.hypot((first.x - second.x).toDouble(), (first.y - second.y).toDouble())
         }
+        fun distanceToSegment(point: android.graphics.PointF, start: GeoPoint, end: GeoPoint): Double {
+            val a = map.projection.toScreenLocation(LatLng(start.latitude, start.longitude))
+            val b = map.projection.toScreenLocation(LatLng(end.latitude, end.longitude))
+            val dx = (b.x - a.x).toDouble()
+            val dy = (b.y - a.y).toDouble()
+            val lengthSquared = dx * dx + dy * dy
+            val t = if (lengthSquared == 0.0) 0.0 else (((point.x - a.x) * dx + (point.y - a.y) * dy) / lengthSquared).coerceIn(0.0, 1.0)
+            return kotlin.math.hypot(point.x - (a.x + t * dx), point.y - (a.y + t * dy))
+        }
+        fun isInsidePolygon(feature: GeoFeature): Boolean {
+            if (feature.kind != "polygon" || feature.points.size < 3) return false
+            var inside = false
+            var previous = feature.points.last()
+            feature.points.forEach { current ->
+                if ((current.latitude > point.latitude) != (previous.latitude > point.latitude) &&
+                    point.longitude < (previous.longitude - current.longitude) * (point.latitude - current.latitude) /
+                    (previous.latitude - current.latitude) + current.longitude
+                ) inside = !inside
+                previous = current
+            }
+            return inside
+        }
+        return features.mapNotNull { feature ->
+            val vertices = feature.points.zipWithNext().map { (a, b) -> distanceToSegment(tapped, a, b) }.toMutableList()
+            if (feature.kind == "polygon" && feature.points.size >= 3) {
+                vertices += distanceToSegment(tapped, feature.points.last(), feature.points.first())
+            }
+            val vertexDistance = feature.points.minOfOrNull { screenDistance(it, point) } ?: Double.MAX_VALUE
+            val boundaryDistance = vertices.minOrNull() ?: Double.MAX_VALUE
+            val distance = minOf(vertexDistance, boundaryDistance)
+            if (distance < 36.0 || isInsidePolygon(feature)) feature to if (isInsidePolygon(feature)) -1.0 else distance else null
+        }.minByOrNull { it.second }?.first
     }
 
     LaunchedEffect(savedGeoJson) {
@@ -311,12 +392,28 @@ fun GeologicalMapScreen(
     }
     LaunchedEffect(layerVisible) { visible = layerVisible }
     LaunchedEffect(features, mapReady) { if (mapReady) updateSource() }
+    LaunchedEffect(features, selectedId, mapReady) {
+        if (mapReady) mapHandle?.getStyle { style ->
+            style.getSourceAs<GeoJsonSource>("selected-feature")?.setGeoJson(
+                GeologicalMapData.toGeoJson(features.filter { it.id == selectedId })
+            )
+        }
+    }
+    LaunchedEffect(features, selectedId, editAction, draft, mode, kind, mapReady) {
+        val selectedPolygon = features.firstOrNull { it.id == selectedId }?.takeIf {
+            mode == MapMode.SELECT && it.kind == "polygon" && editAction == FeatureEditAction.RESHAPE
+        }
+        val handlePoints = selectedPolygon?.points ?: draft.takeIf { mode == MapMode.DRAW && kind == "polygon" && it.size >= 3 }
+        if (mapReady) mapHandle?.getStyle { style ->
+            style.getSourceAs<GeoJsonSource>("polygon-handles")?.setGeoJson(polygonHandlesGeoJson(handlePoints.orEmpty()))
+        }
+    }
     LaunchedEffect(pins, mapReady) {
         if (mapReady) mapHandle?.getStyle { it.getSourceAs<GeoJsonSource>("form-pins")?.setGeoJson(pinsGeoJson(pins)) }
     }
-    LaunchedEffect(userLocation, mapReady) {
+    LaunchedEffect(userLocation, facingBearing, mapReady) {
         if (mapReady) mapHandle?.getStyle { style ->
-            style.getSourceAs<GeoJsonSource>("user-location")?.setGeoJson(userLocationGeoJson(userLocation))
+            style.getSourceAs<GeoJsonSource>("user-location")?.setGeoJson(userLocationGeoJson(userLocation, facingBearing))
         }
         val location = userLocation
         if (mapReady && location != null && pins.isEmpty() && !userCameraCentered && !userHasMovedMap) {
@@ -425,12 +522,12 @@ fun GeologicalMapScreen(
                 modifier = Modifier.fillMaxSize(),
                 factory = { ctx ->
                     MapLibre.getInstance(ctx)
-                    HttpRequestUtil.setLogEnabled(true)
-                    HttpRequestUtil.setPrintRequestUrlOnFailure(true)
+                    HttpRequestUtil.setLogEnabled(false)
+                    HttpRequestUtil.setPrintRequestUrlOnFailure(false)
                     if (!httpConfigured) {
                         val dispatcher = Dispatcher().apply {
-                            maxRequests = 24
-                            maxRequestsPerHost = 20
+                            maxRequests = 12
+                            maxRequestsPerHost = 8
                         }
                         val cache = Cache(File(ctx.cacheDir, "osm-tile-cache"), 256L * 1024L * 1024L)
                         val client = OkHttpClient.Builder().cache(cache).addInterceptor { chain ->
@@ -448,8 +545,8 @@ fun GeologicalMapScreen(
                             }
                         }.dispatcher(dispatcher)
                             .connectionPool(ConnectionPool(8, 5, java.util.concurrent.TimeUnit.MINUTES))
-                            .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
-                            .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+                            .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+                            .readTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
                             .retryOnConnectionFailure(true)
                             .build()
                         HttpRequestUtil.setOkHttpClient(client)
@@ -484,18 +581,26 @@ fun GeologicalMapScreen(
                                 style.addSource(GeoJsonSource("geology", GeologicalMapData.toGeoJson(features)))
                                 style.addSource(GeoJsonSource("geology-draft", GeologicalMapData.draftToGeoJson(draft, kind)))
                                 style.addSource(GeoJsonSource("form-pins", pinsGeoJson(pins)))
-                                style.addSource(GeoJsonSource("user-location", userLocationGeoJson(userLocation)))
+                                style.addSource(GeoJsonSource("selected-feature", GeologicalMapData.toGeoJson(features.filter { it.id == selectedId })))
+                                style.addSource(GeoJsonSource("polygon-handles", polygonHandlesGeoJson(emptyList())))
+                                style.addSource(GeoJsonSource("user-location", userLocationGeoJson(userLocation, facingBearing)))
+                                style.addImage("user-facing-arrow", userFacingArrowBitmap())
                                 style.addLayer(FillLayer("geology-fill", "geology").withProperties(fillColor(org.maplibre.android.style.expressions.Expression.get("color")), fillOpacity(0.3f), fillOutlineColor(org.maplibre.android.style.expressions.Expression.get("color"))))
                                 style.addLayer(LineLayer("geology-lines", "geology").withProperties(lineColor(org.maplibre.android.style.expressions.Expression.get("color")), lineWidth(1.5f)))
                                 style.addLayer(CircleLayer("geology-points", "geology").withProperties(circleRadius(7f), circleColor(org.maplibre.android.style.expressions.Expression.get("color")), circleStrokeColor("#FFFFFF"), circleStrokeWidth(2f)))
+                                style.addLayer(FillLayer("selected-feature-fill", "selected-feature").withProperties(fillColor("#FFFFFF"), fillOpacity(0.08f), fillOutlineColor("#FFFFFF")))
+                                style.addLayer(LineLayer("selected-feature-halo", "selected-feature").withProperties(lineColor("#FFFFFF"), lineWidth(5f)))
+                                style.addLayer(LineLayer("selected-feature-outline", "selected-feature").withProperties(lineColor(org.maplibre.android.style.expressions.Expression.get("color")), lineWidth(3f)))
+                                style.addLayer(CircleLayer("selected-feature-point", "selected-feature").withProperties(circleRadius(11f), circleColor(org.maplibre.android.style.expressions.Expression.get("color")), circleStrokeColor("#FFFFFF"), circleStrokeWidth(3f)))
                                 style.addLayer(SymbolLayer("geology-labels", "geology").withProperties(textField(org.maplibre.android.style.expressions.Expression.get("name")), textFont(arrayOf("Noto Sans Regular")), textSize(10f), textColor("#263238"), textHaloColor("#FFFFFF"), textHaloWidth(1.5f), textOffset(arrayOf(0f, 1.1f))))
                                 style.addLayer(FillLayer("geology-draft-fill", "geology-draft").withProperties(fillColor(org.maplibre.android.style.expressions.Expression.get("color")), fillOpacity(0.24f), fillOutlineColor(org.maplibre.android.style.expressions.Expression.get("color"))))
                                 style.addLayer(LineLayer("geology-draft-lines", "geology-draft").withProperties(lineColor(org.maplibre.android.style.expressions.Expression.get("color")), lineWidth(1.5f)))
                                 style.addLayer(CircleLayer("geology-draft-points", "geology-draft").withProperties(circleRadius(6f), circleColor(org.maplibre.android.style.expressions.Expression.get("color")), circleStrokeColor("#FFFFFF"), circleStrokeWidth(2f)))
                                 style.addLayer(CircleLayer("form-pin-circles", "form-pins").withProperties(circleRadius(8f), circleColor("#1565C0"), circleStrokeColor("#FFFFFF"), circleStrokeWidth(2f)))
                                 style.addLayer(CircleLayer("user-location-halo", "user-location").withProperties(circleRadius(12f), circleColor("#2196F3"), circleOpacity(0.22f)))
-                                style.addLayer(CircleLayer("user-location-dot", "user-location").withProperties(circleRadius(6f), circleColor("#1565C0"), circleStrokeColor("#FFFFFF"), circleStrokeWidth(2.5f)))
                                 style.addLayer(SymbolLayer("form-pin-labels", "form-pins").withProperties(textField(org.maplibre.android.style.expressions.Expression.get("name")), textFont(arrayOf("Noto Sans Regular")), textSize(11f), textColor("#10243A"), textHaloColor("#FFFFFF"), textHaloWidth(1.5f), textOffset(arrayOf(0f, 1.2f))))
+                                style.addLayer(CircleLayer("polygon-edit-handles", "polygon-handles").withProperties(circleRadius(6f), circleColor(org.maplibre.android.style.expressions.Expression.get("color")), circleStrokeColor("#FFFFFF"), circleStrokeWidth(2f)))
+                                style.addLayer(SymbolLayer("user-facing-direction", "user-location").withProperties(iconImage("user-facing-arrow"), iconSize(1f), iconRotate(org.maplibre.android.style.expressions.Expression.get("bearing")), iconRotationAlignment("map"), iconAllowOverlap(true), iconIgnorePlacement(true)))
                                 map.uiSettings.isRotateGesturesEnabled = true
                                 map.uiSettings.setCompassEnabled(true)
                                 map.uiSettings.setCompassFadeFacingNorth(false)
@@ -508,7 +613,23 @@ fun GeologicalMapScreen(
                                         MapMode.NAVIGATE -> { selectedPin = null }
                                         MapMode.DRAW -> {
                                             selectedPin = null
-                                            draft = if (kind == "point" || kind == "text") listOf(tapped) else draft + tapped
+                                            draft = when {
+                                                kind == "point" || kind == "text" -> listOf(tapped)
+                                                kind == "polygon" && draft.size >= 3 -> {
+                                                    val screenPoint = map.projection.toScreenLocation(latLng)
+                                                    val nearest = draft.indices.map { index ->
+                                                        val start = draft[index]
+                                                        val end = draft[(index + 1) % draft.size]
+                                                        val midpoint = GeoPoint((start.longitude + end.longitude) / 2.0, (start.latitude + end.latitude) / 2.0)
+                                                        val screen = map.projection.toScreenLocation(LatLng(midpoint.latitude, midpoint.longitude))
+                                                        Triple(index, midpoint, kotlin.math.hypot((screen.x - screenPoint.x).toDouble(), (screen.y - screenPoint.y).toDouble()))
+                                                    }.minByOrNull { it.third }
+                                                    if (nearest != null && nearest.third <= 30.0) {
+                                                        draft.toMutableList().apply { add(nearest.first + 1, nearest.second) }
+                                                    } else draft + tapped
+                                                }
+                                                else -> draft + tapped
+                                            }
                                             if (kind == "point") {
                                                 checkpoint()
                                                 features = features + GeoFeature(UUID.randomUUID().toString(), kind, "Point", "#D84315", draft)
@@ -526,15 +647,41 @@ fun GeologicalMapScreen(
                                                     selected.copy(points = selected.points.map { GeoPoint(it.longitude + dLon, it.latitude + dLat) })
                                                 } else {
                                                     val point = map.projection.toScreenLocation(latLng)
-                                                    val nearest = selected.points.indices.minByOrNull { i ->
-                                                        val p = selected.points[i]
-                                                        val screen = map.projection.toScreenLocation(LatLng(p.latitude, p.longitude))
-                                                        kotlin.math.hypot((screen.x - point.x).toDouble(), (screen.y - point.y).toDouble())
-                                                    } ?: 0
-                                                    selected.copy(points = selected.points.mapIndexed { i, p -> if (i == nearest) tapped else p })
+                                                    if (selected.kind == "polygon" && selected.points.size >= 3) {
+                                                        val candidates = buildList {
+                                                            selected.points.forEachIndexed { index, vertex ->
+                                                                add(Triple(vertex, false, index))
+                                                                val next = selected.points[(index + 1) % selected.points.size]
+                                                                add(Triple(GeoPoint((vertex.longitude + next.longitude) / 2.0, (vertex.latitude + next.latitude) / 2.0), true, index))
+                                                            }
+                                                        }
+                                                        val closest = candidates.minByOrNull { (coordinate, _, _) ->
+                                                            val screen = map.projection.toScreenLocation(LatLng(coordinate.latitude, coordinate.longitude))
+                                                            kotlin.math.hypot((screen.x - point.x).toDouble(), (screen.y - point.y).toDouble())
+                                                        }
+                                                        if (closest == null) selected else {
+                                                            val handleScreen = map.projection.toScreenLocation(LatLng(closest.first.latitude, closest.first.longitude))
+                                                            val distance = kotlin.math.hypot((handleScreen.x - point.x).toDouble(), (handleScreen.y - point.y).toDouble())
+                                                            if (distance > 32.0) selected
+                                                            else if (closest.second) {
+                                                                selected.copy(points = selected.points.toMutableList().apply { add(closest.third + 1, closest.first) })
+                                                            } else {
+                                                                selected.copy(points = selected.points.mapIndexed { i, p -> if (i == closest.third) tapped else p })
+                                                            }
+                                                        }
+                                                    } else {
+                                                        val nearest = selected.points.indices.minByOrNull { i ->
+                                                            val p = selected.points[i]
+                                                            val screen = map.projection.toScreenLocation(LatLng(p.latitude, p.longitude))
+                                                            kotlin.math.hypot((screen.x - point.x).toDouble(), (screen.y - point.y).toDouble())
+                                                        } ?: 0
+                                                        selected.copy(points = selected.points.mapIndexed { i, p -> if (i == nearest) tapped else p })
+                                                    }
                                                 }
-                                                features = features.map { if (it.id == selected.id) changed else it }
-                                                save()
+                                                if (changed != selected) {
+                                                    features = features.map { if (it.id == selected.id) changed else it }
+                                                    save()
+                                                }
                                             } else selectedId = hitTest(tapped)?.id
                                         }
                                         MapMode.DELETE -> {
@@ -584,6 +731,26 @@ fun GeologicalMapScreen(
                     }
                 }
             )
+            }
+            FloatingActionButton(
+                onClick = {
+                    val location = userLocation
+                    if (location == null) {
+                        Toast.makeText(context, "Waiting for an accurate location fix", Toast.LENGTH_SHORT).show()
+                    } else {
+                        userHasMovedMap = false
+                        userCameraCentered = true
+                        val zoom = maxOf(mapHandle?.cameraPosition?.zoom ?: 15.0, 15.0)
+                        mapHandle?.animateCamera(
+                            CameraUpdateFactory.newLatLngZoom(LatLng(location.latitude, location.longitude), zoom)
+                        )
+                    }
+                },
+                modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp).size(52.dp),
+                containerColor = MaterialTheme.colorScheme.surface,
+                contentColor = MaterialTheme.colorScheme.primary
+            ) {
+                Icon(Icons.Default.GpsFixed, contentDescription = "Recenter on my location")
             }
             val statusMessage = when {
                 !hasInternet -> "No internet connection. Connect and retry to load the online map."
@@ -829,13 +996,16 @@ private fun pinsGeoJson(pins: List<SurveyMapPin>): String = com.google.gson.Gson
     } })
 })
 
-private fun userLocationGeoJson(location: Location?): String = com.google.gson.Gson().toJson(com.google.gson.JsonObject().apply {
+private fun userLocationGeoJson(location: Location?, bearing: Float): String = com.google.gson.Gson().toJson(com.google.gson.JsonObject().apply {
     addProperty("type", "FeatureCollection")
     add("features", com.google.gson.JsonArray().also { features ->
         if (location != null) {
             features.add(com.google.gson.JsonObject().apply {
                 addProperty("type", "Feature")
-                add("properties", com.google.gson.JsonObject())
+                add("properties", com.google.gson.JsonObject().apply {
+                    addProperty("bearing", bearing)
+                    addProperty("accuracy", if (location.hasAccuracy()) location.accuracy else -1f)
+                })
                 add("geometry", com.google.gson.JsonObject().apply {
                     addProperty("type", "Point")
                     add("coordinates", com.google.gson.JsonArray().also { it.add(location.longitude); it.add(location.latitude) })
@@ -844,3 +1014,53 @@ private fun userLocationGeoJson(location: Location?): String = com.google.gson.G
         }
     })
 })
+
+private fun polygonHandlesGeoJson(points: List<GeoPoint>): String = com.google.gson.Gson().toJson(com.google.gson.JsonObject().apply {
+    addProperty("type", "FeatureCollection")
+    add("features", com.google.gson.JsonArray().also { features ->
+        if (points.size >= 3) points.forEachIndexed { index, vertex ->
+            fun handle(point: GeoPoint, type: String, color: String) {
+                features.add(com.google.gson.JsonObject().apply {
+                    addProperty("type", "Feature")
+                    add("properties", com.google.gson.JsonObject().apply {
+                        addProperty("handleType", type)
+                        addProperty("index", index)
+                        addProperty("color", color)
+                    })
+                    add("geometry", com.google.gson.JsonObject().apply {
+                        addProperty("type", "Point")
+                        add("coordinates", com.google.gson.JsonArray().also { it.add(point.longitude); it.add(point.latitude) })
+                    })
+                })
+            }
+            handle(vertex, "vertex", "#FFB300")
+            val next = points[(index + 1) % points.size]
+            handle(
+                GeoPoint((vertex.longitude + next.longitude) / 2.0, (vertex.latitude + next.latitude) / 2.0),
+                "midpoint",
+                "#00BCD4"
+            )
+        }
+    })
+})
+
+private fun userFacingArrowBitmap(): Bitmap = Bitmap.createBitmap(64, 64, Bitmap.Config.ARGB_8888).also { bitmap ->
+    val canvas = AndroidCanvas(bitmap)
+    val arrow = AndroidPath().apply {
+        moveTo(32f, 4f)
+        lineTo(56f, 56f)
+        lineTo(32f, 44f)
+        lineTo(8f, 56f)
+        close()
+    }
+    canvas.drawPath(arrow, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = AndroidColor.WHITE
+        style = Paint.Style.STROKE
+        strokeWidth = 8f
+        strokeJoin = Paint.Join.ROUND
+    })
+    canvas.drawPath(arrow, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = AndroidColor.rgb(0, 119, 204)
+        style = Paint.Style.FILL
+    })
+}
