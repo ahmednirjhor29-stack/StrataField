@@ -98,7 +98,7 @@ fun ProjectDetailScreen(
             )
         },
         floatingActionButton = {
-            if (selectedTab == 1 || selectedTab == 2) {
+            if ((selectedTab == 1 && surveySubTab == 0) || selectedTab == 2) {
                 FloatingActionButton(
                     onClick = {
                         when (selectedTab) {
