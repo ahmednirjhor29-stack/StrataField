@@ -317,7 +317,8 @@ fun GeologicalMapScreen(
                                 if (!cameraInitialized) {
                                     val initialTarget = pins.firstOrNull()?.point?.let { LatLng(it.latitude, it.longitude) }
                                         ?: LatLng(20.0, 0.0)
-                                    val initialZoom = if (pins.isEmpty()) 1.5 else 13.0
+                                    // Start at world scale when no survey coordinates exist to minimize first tile payloads.
+                                    val initialZoom = if (pins.isEmpty()) 0.5 else 13.0
                                     map.cameraPosition = CameraPosition.Builder()
                                         .target(initialTarget)
                                         .zoom(initialZoom)
