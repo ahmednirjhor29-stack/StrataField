@@ -217,6 +217,7 @@ fun GeologicalMapScreen(
             AndroidView(
                 modifier = Modifier.fillMaxSize(),
                 factory = { ctx ->
+                    MapLibre.getInstance(ctx)
                     if (!httpConfigured) {
                         val cache = Cache(File(ctx.cacheDir, "osm-tile-cache"), 64L * 1024L * 1024L)
                         val client = OkHttpClient.Builder().cache(cache).addInterceptor { chain ->
@@ -225,7 +226,6 @@ fun GeologicalMapScreen(
                         HttpRequestUtil.setOkHttpClient(client)
                         httpConfigured = true
                     }
-                    MapLibre.getInstance(ctx)
                     MapView(ctx).also { view ->
                         mapView = view
                         mapRendered = false
