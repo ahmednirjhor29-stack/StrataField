@@ -1,6 +1,11 @@
 package com.stratafield.app.ui.components
 
 import android.view.MotionEvent
+import android.Manifest
+import android.content.pm.PackageManager
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
 import android.net.Uri
 import android.net.ConnectivityManager
 import android.net.Network
@@ -11,10 +16,18 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -22,6 +35,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -33,6 +47,7 @@ import com.google.gson.JsonParser
 import com.stratafield.app.data.model.FormResponse
 import org.maplibre.android.MapLibre
 import org.maplibre.android.camera.CameraPosition
+import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
@@ -58,6 +73,7 @@ private enum class MapFileFormat(val preferenceSuffix: String, val mimeType: Str
     KML("kml", "application/vnd.google-earth.kml+xml", "kml")
 }
 private val featureKinds = listOf("point", "line", "polygon", "boundary", "fault", "contact", "text")
+private const val SATELLITE_STYLE = """{"version":8,"sources":{"satellite":{"type":"raster","tiles":["https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"],"tileSize":256,"maxzoom":19,"attribution":"Source: Esri, Vantor, Earthstar Geographics, and the GIS User Community"}},"layers":[{"id":"satellite-imagery","type":"raster","source":"satellite"}]}"""
 
 @Composable
 fun GeologicalMapScreen(
@@ -93,8 +109,14 @@ fun GeologicalMapScreen(
     var mapHandle by remember { mutableStateOf<org.maplibre.android.maps.MapLibreMap?>(null) }
     var editorText by remember { mutableStateOf("") }
     var showFeatureEditor by remember { mutableStateOf(false) }
+    var showColorPicker by remember { mutableStateOf(false) }
+    var pickerHue by remember { mutableFloatStateOf(0f) }
+    var pickerSaturation by remember { mutableFloatStateOf(1f) }
+    var pickerBrightness by remember { mutableFloatStateOf(1f) }
     var editAction by remember { mutableStateOf(FeatureEditAction.NONE) }
     var cameraInitialized by remember { mutableStateOf(false) }
+    var userCameraCentered by remember { mutableStateOf(false) }
+    var userHasMovedMap by remember { mutableStateOf(false) }
     val undo = remember { mutableStateListOf<String>() }
     val redo = remember { mutableStateListOf<String>() }
     val mapFilePreferences = remember(context) {
@@ -107,6 +129,44 @@ fun GeologicalMapScreen(
     }
     var saveFormatMenuExpanded by remember(projectId) { mutableStateOf(false) }
     var savingMapFile by remember { mutableStateOf(false) }
+    var userLocation by remember { mutableStateOf<Location?>(null) }
+    var locationPermissionGranted by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+                ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        )
+    }
+    val locationPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { grants -> locationPermissionGranted = grants.values.any { it } }
+    LaunchedEffect(Unit) {
+        val hasLocationPermission = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        if (!hasLocationPermission) {
+            locationPermissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+        }
+    }
+
+    DisposableEffect(context, locationPermissionGranted) {
+        val locationManager = context.getSystemService(LocationManager::class.java)
+        val fineGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        val coarseGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        val listener = LocationListener { userLocation = it }
+        if (fineGranted || coarseGranted) {
+            runCatching {
+                val providers = locationManager?.getProviders(true).orEmpty().filter { provider ->
+                    provider == LocationManager.GPS_PROVIDER || provider == LocationManager.NETWORK_PROVIDER
+                }
+                providers.forEach { provider ->
+                    locationManager?.getLastKnownLocation(provider)?.let { cached ->
+                        if (userLocation == null || cached.time > (userLocation?.time ?: 0L)) userLocation = cached
+                    }
+                    locationManager?.requestLocationUpdates(provider, 2_000L, 2f, listener, Looper.getMainLooper())
+                }
+            }
+        }
+        onDispose { runCatching { locationManager?.removeUpdates(listener) } }
+    }
 
     fun writeMapFile(uri: Uri, content: String, format: MapFileFormat, saveAsProjectDestination: Boolean) {
         scope.launch {
@@ -254,6 +314,18 @@ fun GeologicalMapScreen(
     LaunchedEffect(pins, mapReady) {
         if (mapReady) mapHandle?.getStyle { it.getSourceAs<GeoJsonSource>("form-pins")?.setGeoJson(pinsGeoJson(pins)) }
     }
+    LaunchedEffect(userLocation, mapReady) {
+        if (mapReady) mapHandle?.getStyle { style ->
+            style.getSourceAs<GeoJsonSource>("user-location")?.setGeoJson(userLocationGeoJson(userLocation))
+        }
+        val location = userLocation
+        if (mapReady && location != null && pins.isEmpty() && !userCameraCentered && !userHasMovedMap) {
+            mapHandle?.animateCamera(
+                CameraUpdateFactory.newLatLngZoom(LatLng(location.latitude, location.longitude), 15.0)
+            )
+            userCameraCentered = true
+        }
+    }
     LaunchedEffect(draft, kind, mapReady) {
         if (mapReady) {
             val draftJson = GeologicalMapData.draftToGeoJson(draft, kind)
@@ -335,10 +407,15 @@ fun GeologicalMapScreen(
                 FilterChip(selected = editAction == FeatureEditAction.RESHAPE, onClick = { editAction = if (editAction == FeatureEditAction.RESHAPE) FeatureEditAction.NONE else FeatureEditAction.RESHAPE }, label = { Text("Reshape") })
                 IconButton(onClick = { features.firstOrNull { it.id == selectedId }?.let { editorText = it.name; showFeatureEditor = true } }) { Icon(Icons.Default.Edit, "Edit selected feature") }
                 IconButton(onClick = {
-                    checkpoint()
-                    features = features.map { if (it.id == selectedId) it.copy(color = if (it.color == "#D84315") "#1565C0" else "#D84315") else it }
-                    save()
-                }) { Icon(Icons.Default.Palette, "Change feature color") }
+                    features.firstOrNull { it.id == selectedId }?.let { feature ->
+                        val hsv = FloatArray(3)
+                        runCatching { android.graphics.Color.colorToHSV(android.graphics.Color.parseColor(feature.color), hsv) }
+                        pickerHue = hsv[0]
+                        pickerSaturation = hsv[1]
+                        pickerBrightness = hsv[2]
+                        showColorPicker = true
+                    }
+                }) { Icon(Icons.Default.Palette, "Choose feature color") }
                 IconButton(onClick = { featurePendingDelete = features.firstOrNull { it.id == selectedId } }) { Icon(Icons.Default.Delete, "Delete selected feature") }
             }
         }
@@ -397,22 +474,31 @@ fun GeologicalMapScreen(
                         view.onResume()
                         view.getMapAsync { map ->
                             mapHandle = map
-                            val bundledStyle = ctx.assets.open("openfreemap-positron.json").bufferedReader().use { it.readText() }
-                            map.setStyle(Style.Builder().fromJson(bundledStyle)) { style ->
+                            map.addOnCameraMoveStartedListener { reason ->
+                                if (reason == org.maplibre.android.maps.MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE) {
+                                    userHasMovedMap = true
+                                }
+                            }
+                            map.setStyle(Style.Builder().fromJson(SATELLITE_STYLE)) { style ->
                                 android.util.Log.i("StrataMapLifecycle", "style loaded")
                                 style.addSource(GeoJsonSource("geology", GeologicalMapData.toGeoJson(features)))
                                 style.addSource(GeoJsonSource("geology-draft", GeologicalMapData.draftToGeoJson(draft, kind)))
                                 style.addSource(GeoJsonSource("form-pins", pinsGeoJson(pins)))
+                                style.addSource(GeoJsonSource("user-location", userLocationGeoJson(userLocation)))
                                 style.addLayer(FillLayer("geology-fill", "geology").withProperties(fillColor(org.maplibre.android.style.expressions.Expression.get("color")), fillOpacity(0.3f), fillOutlineColor(org.maplibre.android.style.expressions.Expression.get("color"))))
-                                style.addLayer(LineLayer("geology-lines", "geology").withProperties(lineColor(org.maplibre.android.style.expressions.Expression.get("color")), lineWidth(4.5f)))
+                                style.addLayer(LineLayer("geology-lines", "geology").withProperties(lineColor(org.maplibre.android.style.expressions.Expression.get("color")), lineWidth(1.5f)))
                                 style.addLayer(CircleLayer("geology-points", "geology").withProperties(circleRadius(7f), circleColor(org.maplibre.android.style.expressions.Expression.get("color")), circleStrokeColor("#FFFFFF"), circleStrokeWidth(2f)))
                                 style.addLayer(SymbolLayer("geology-labels", "geology").withProperties(textField(org.maplibre.android.style.expressions.Expression.get("name")), textFont(arrayOf("Noto Sans Regular")), textSize(10f), textColor("#263238"), textHaloColor("#FFFFFF"), textHaloWidth(1.5f), textOffset(arrayOf(0f, 1.1f))))
                                 style.addLayer(FillLayer("geology-draft-fill", "geology-draft").withProperties(fillColor(org.maplibre.android.style.expressions.Expression.get("color")), fillOpacity(0.24f), fillOutlineColor(org.maplibre.android.style.expressions.Expression.get("color"))))
-                                style.addLayer(LineLayer("geology-draft-lines", "geology-draft").withProperties(lineColor(org.maplibre.android.style.expressions.Expression.get("color")), lineWidth(4.5f)))
+                                style.addLayer(LineLayer("geology-draft-lines", "geology-draft").withProperties(lineColor(org.maplibre.android.style.expressions.Expression.get("color")), lineWidth(1.5f)))
                                 style.addLayer(CircleLayer("geology-draft-points", "geology-draft").withProperties(circleRadius(6f), circleColor(org.maplibre.android.style.expressions.Expression.get("color")), circleStrokeColor("#FFFFFF"), circleStrokeWidth(2f)))
                                 style.addLayer(CircleLayer("form-pin-circles", "form-pins").withProperties(circleRadius(8f), circleColor("#1565C0"), circleStrokeColor("#FFFFFF"), circleStrokeWidth(2f)))
+                                style.addLayer(CircleLayer("user-location-halo", "user-location").withProperties(circleRadius(12f), circleColor("#2196F3"), circleOpacity(0.22f)))
+                                style.addLayer(CircleLayer("user-location-dot", "user-location").withProperties(circleRadius(6f), circleColor("#1565C0"), circleStrokeColor("#FFFFFF"), circleStrokeWidth(2.5f)))
                                 style.addLayer(SymbolLayer("form-pin-labels", "form-pins").withProperties(textField(org.maplibre.android.style.expressions.Expression.get("name")), textFont(arrayOf("Noto Sans Regular")), textSize(11f), textColor("#10243A"), textHaloColor("#FFFFFF"), textHaloWidth(1.5f), textOffset(arrayOf(0f, 1.2f))))
                                 map.uiSettings.isRotateGesturesEnabled = true
+                                map.uiSettings.setCompassEnabled(true)
+                                map.uiSettings.setCompassFadeFacingNorth(false)
                                 map.addOnMapClickListener { latLng ->
                                     val tapped = GeoPoint(latLng.longitude, latLng.latitude)
                                     val pin = pins.minByOrNull { distanceMeters(it.point, tapped) }?.takeIf { distanceMeters(it.point, tapped) < 40.0 }
@@ -471,14 +557,19 @@ fun GeologicalMapScreen(
                                 mapReady = true
                                 mapLoadError = null
                                 if (!cameraInitialized) {
-                                    val initialTarget = pins.firstOrNull()?.point?.let { LatLng(it.latitude, it.longitude) }
-                                        ?: LatLng(20.0, 0.0)
-                                    // Start at world scale when no survey coordinates exist to minimize first tile payloads.
-                                    val initialZoom = if (pins.isEmpty()) 0.5 else 13.0
+                                    val initialTarget = userLocation?.let { LatLng(it.latitude, it.longitude) }
+                                        ?: pins.firstOrNull()?.point?.let { LatLng(it.latitude, it.longitude) }
+                                        ?: LatLng(0.0, 0.0)
+                                    val initialZoom = when {
+                                        userLocation != null -> 15.0
+                                        pins.isNotEmpty() -> 13.0
+                                        else -> 2.5
+                                    }
                                     map.cameraPosition = CameraPosition.Builder()
                                         .target(initialTarget)
                                         .zoom(initialZoom)
                                         .build()
+                                    userCameraCentered = userLocation != null
                                     cameraInitialized = true
                                 }
                             }
@@ -487,10 +578,9 @@ fun GeologicalMapScreen(
                 },
                 update = {
                     mapHandle?.let { map ->
-                        val gestures = mode == MapMode.NAVIGATE
-                        map.uiSettings.isScrollGesturesEnabled = gestures
-                        map.uiSettings.isZoomGesturesEnabled = gestures
-                        map.uiSettings.isRotateGesturesEnabled = gestures
+                        map.uiSettings.isScrollGesturesEnabled = true
+                        map.uiSettings.isZoomGesturesEnabled = true
+                        map.uiSettings.isRotateGesturesEnabled = true
                     }
                 }
             )
@@ -528,10 +618,9 @@ fun GeologicalMapScreen(
                 }
             }
             // Independent pins are rendered from saved forms and never written into the editable layer.
+                Text("Source: Esri, Vantor, Earthstar Geographics, and the GIS User Community", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.background(MaterialTheme.colorScheme.surface.copy(alpha = .88f), RoundedCornerShape(6.dp)).padding(horizontal = 7.dp, vertical = 4.dp))
+                Text("Satellite imagery", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 4.dp))
             Column(Modifier.align(Alignment.BottomStart).padding(8.dp)) {
-                Text("© OpenStreetMap contributors", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.background(MaterialTheme.colorScheme.surface.copy(alpha = .88f), RoundedCornerShape(6.dp)).padding(horizontal = 7.dp, vertical = 4.dp))
-                Text("\u00a9 OpenFreeMap · \u00a9 OpenMapTiles", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.background(MaterialTheme.colorScheme.surface.copy(alpha = .88f), RoundedCornerShape(6.dp)).padding(horizontal = 7.dp, vertical = 4.dp))
-                Text("Map tiles: OpenFreeMap", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 4.dp))
             }
             selectedPin?.let { pin ->
                 val response = responses.firstOrNull { it.id == pin.responseId }
@@ -579,6 +668,40 @@ fun GeologicalMapScreen(
                 showFeatureEditor = false
             }) { Text("Save") } }, dismissButton = { TextButton(onClick = { showFeatureEditor = false }) { Text("Cancel") } })
     }
+    if (showColorPicker) {
+        AlertDialog(
+            onDismissRequest = { showColorPicker = false },
+            title = { Text("Feature color · HSB") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    HsbColorPicker(
+                        hue = pickerHue,
+                        saturation = pickerSaturation,
+                        brightness = pickerBrightness,
+                        onHueChange = { pickerHue = it },
+                        onSaturationBrightnessChange = { saturation, brightness ->
+                            pickerSaturation = saturation
+                            pickerBrightness = brightness
+                        }
+                    )
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Box(Modifier.size(24.dp).background(hsbComposeColor(pickerHue, pickerSaturation, pickerBrightness), RoundedCornerShape(4.dp)))
+                        Text(hsbHexColor(pickerHue, pickerSaturation, pickerBrightness), style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    checkpoint()
+                    val selectedColor = hsbHexColor(pickerHue, pickerSaturation, pickerBrightness)
+                    features = features.map { if (it.id == selectedId) it.copy(color = selectedColor) else it }
+                    save()
+                    showColorPicker = false
+                }) { Text("Apply") }
+            },
+            dismissButton = { TextButton(onClick = { showColorPicker = false }) { Text("Cancel") } }
+        )
+    }
     featurePendingDelete?.let { feature ->
         AlertDialog(
             onDismissRequest = { featurePendingDelete = null },
@@ -602,6 +725,82 @@ fun GeologicalMapScreen(
         )
     }
 }
+
+@Composable
+private fun HsbColorPicker(
+    hue: Float,
+    saturation: Float,
+    brightness: Float,
+    onHueChange: (Float) -> Unit,
+    onSaturationBrightnessChange: (Float, Float) -> Unit
+) {
+    val hueColor = hsbComposeColor(hue, 1f, 1f)
+    val hueColors = remember {
+        listOf(Color.Red, Color.Magenta, Color.Blue, Color.Cyan, Color.Green, Color.Yellow, Color.Red)
+    }
+    Canvas(
+        Modifier.fillMaxWidth().height(180.dp)
+            .pointerInput(Unit) {
+                fun update(position: Offset) {
+                    onSaturationBrightnessChange(
+                        (position.x / size.width).coerceIn(0f, 1f),
+                        (1f - position.y / size.height).coerceIn(0f, 1f)
+                    )
+                }
+                detectTapGestures { update(it) }
+            }
+            .pointerInput(Unit) {
+                detectDragGestures(
+                    onDragStart = { position ->
+                        onSaturationBrightnessChange(
+                            (position.x / size.width).coerceIn(0f, 1f),
+                            (1f - position.y / size.height).coerceIn(0f, 1f)
+                        )
+                    },
+                    onDrag = { change, _ ->
+                        change.consume()
+                        onSaturationBrightnessChange(
+                            (change.position.x / size.width).coerceIn(0f, 1f),
+                            (1f - change.position.y / size.height).coerceIn(0f, 1f)
+                        )
+                    }
+                )
+            }
+    ) {
+        drawRect(Brush.horizontalGradient(listOf(Color.White, hueColor)))
+        drawRect(Brush.verticalGradient(listOf(Color.Transparent, Color.Black)))
+        val marker = Offset(saturation * size.width, (1f - brightness) * size.height)
+        drawCircle(Color.Black, radius = 9.dp.toPx(), center = marker, style = Stroke(width = 2.dp.toPx()))
+        drawCircle(Color.White, radius = 7.dp.toPx(), center = marker, style = Stroke(width = 2.dp.toPx()))
+    }
+    Canvas(
+        Modifier.fillMaxWidth().height(24.dp)
+            .pointerInput(Unit) {
+                fun update(position: Offset) = onHueChange((position.x / size.width).coerceIn(0f, 1f) * 360f)
+                detectTapGestures { update(it) }
+            }
+            .pointerInput(Unit) {
+                detectDragGestures(
+                    onDragStart = { position -> onHueChange((position.x / size.width).coerceIn(0f, 1f) * 360f) },
+                    onDrag = { change, _ ->
+                        change.consume()
+                        onHueChange((change.position.x / size.width).coerceIn(0f, 1f) * 360f)
+                    }
+                )
+            }
+    ) {
+        drawRect(Brush.horizontalGradient(hueColors))
+        val x = hue / 360f * size.width
+        drawCircle(Color.Black, radius = 9.dp.toPx(), center = Offset(x, size.height / 2), style = Stroke(width = 2.dp.toPx()))
+        drawCircle(Color.White, radius = 7.dp.toPx(), center = Offset(x, size.height / 2), style = Stroke(width = 2.dp.toPx()))
+    }
+}
+
+private fun hsbComposeColor(hue: Float, saturation: Float, brightness: Float): Color =
+    Color(android.graphics.Color.HSVToColor(floatArrayOf(hue, saturation, brightness)))
+
+private fun hsbHexColor(hue: Float, saturation: Float, brightness: Float): String =
+    "#%06X".format(android.graphics.Color.HSVToColor(floatArrayOf(hue, saturation, brightness)) and 0xFFFFFF)
 
 private fun distanceMeters(a: GeoPoint, b: GeoPoint): Double {
     val dLat = Math.toRadians(a.latitude - b.latitude); val dLon = Math.toRadians(a.longitude - b.longitude)
@@ -628,4 +827,20 @@ private fun pinsGeoJson(pins: List<SurveyMapPin>): String = com.google.gson.Gson
             })
         })
     } })
+})
+
+private fun userLocationGeoJson(location: Location?): String = com.google.gson.Gson().toJson(com.google.gson.JsonObject().apply {
+    addProperty("type", "FeatureCollection")
+    add("features", com.google.gson.JsonArray().also { features ->
+        if (location != null) {
+            features.add(com.google.gson.JsonObject().apply {
+                addProperty("type", "Feature")
+                add("properties", com.google.gson.JsonObject())
+                add("geometry", com.google.gson.JsonObject().apply {
+                    addProperty("type", "Point")
+                    add("coordinates", com.google.gson.JsonArray().also { it.add(location.longitude); it.add(location.latitude) })
+                })
+            })
+        }
+    })
 })

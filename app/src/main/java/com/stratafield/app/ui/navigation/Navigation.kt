@@ -142,7 +142,7 @@ fun StrataFieldApp() {
             CompassOverlay(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
-                    .padding(top = 10.dp, end = 10.dp)
+                    .padding(top = 34.dp, end = 26.dp)
             )
         }
     }
