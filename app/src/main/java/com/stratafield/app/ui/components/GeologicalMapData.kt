@@ -57,6 +57,41 @@ object GeologicalMapData {
         return gson.toJson(collection)
     }
 
+    fun toKml(features: List<GeoFeature>): String {
+        fun xml(value: String) = value.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace("\"", "&quot;")
+            .replace("'", "&apos;")
+        fun kmlColor(value: String): String {
+            val hex = value.removePrefix("#")
+            if (hex.length != 6 || hex.any { it.digitToIntOrNull(16) == null }) return "ff1543d8"
+            return "ff${hex.substring(4, 6)}${hex.substring(2, 4)}${hex.substring(0, 2)}"
+        }
+        fun coordinates(points: List<GeoPoint>) = points.joinToString(" ") {
+            "${it.longitude},${it.latitude},0"
+        }
+
+        val placemarks = features.joinToString("\n") { feature ->
+            val geometry = when {
+                feature.kind == "point" || feature.kind == "text" -> feature.points.firstOrNull()?.let {
+                    "<Point><coordinates>${coordinates(listOf(it))}</coordinates></Point>"
+                }.orEmpty()
+                feature.kind == "polygon" && feature.points.size >= 3 -> {
+                    val ring = feature.points.toMutableList().apply { if (last() != first()) add(first()) }
+                    "<Polygon><outerBoundaryIs><LinearRing><coordinates>${coordinates(ring)}</coordinates></LinearRing></outerBoundaryIs></Polygon>"
+                }
+                feature.points.size >= 2 -> "<LineString><coordinates>${coordinates(feature.points)}</coordinates></LineString>"
+                feature.points.size == 1 -> "<Point><coordinates>${coordinates(feature.points)}</coordinates></Point>"
+                else -> ""
+            }
+            if (geometry.isEmpty()) return@joinToString ""
+            val color = kmlColor(feature.color)
+            """<Placemark><name>${xml(feature.name)}</name><description>${xml(feature.kind)}</description><Style><LineStyle><color>$color</color><width>3</width></LineStyle><PolyStyle><color>$color</color></PolyStyle><IconStyle><color>$color</color></IconStyle></Style>$geometry</Placemark>"""
+        }
+        return """<?xml version="1.0" encoding="UTF-8"?><kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>StrataField map</name>$placemarks</Document></kml>"""
+    }
+
     fun fromGeoJson(json: String): List<GeoFeature> = runCatching {
         val features = JsonParser.parseString(json).asJsonObject.getAsJsonArray("features")
         features.mapNotNull { node ->

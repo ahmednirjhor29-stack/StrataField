@@ -53,6 +53,10 @@ import java.util.UUID
 
 private enum class MapMode { NAVIGATE, DRAW, SELECT, DELETE }
 private enum class FeatureEditAction { NONE, MOVE, RESHAPE }
+private enum class MapFileFormat(val preferenceSuffix: String, val mimeType: String, val extension: String) {
+    GEOJSON("geojson", "application/geo+json", "geojson"),
+    KML("kml", "application/vnd.google-earth.kml+xml", "kml")
+}
 private val featureKinds = listOf("point", "line", "polygon", "boundary", "fault", "contact", "text")
 
 @Composable
@@ -96,23 +100,27 @@ fun GeologicalMapScreen(
     val mapFilePreferences = remember(context) {
         context.getSharedPreferences("geological_map_files", android.content.Context.MODE_PRIVATE)
     }
-    var savedMapFileUri by remember(projectId) {
-        mutableStateOf(mapFilePreferences.getString(projectId.toString(), null))
+    var mapFileFormat by remember(projectId) {
+        mutableStateOf(runCatching {
+            MapFileFormat.valueOf(mapFilePreferences.getString("$projectId.selectedFormat", "GEOJSON") ?: "GEOJSON")
+        }.getOrDefault(MapFileFormat.GEOJSON))
     }
+    var saveFormatMenuExpanded by remember(projectId) { mutableStateOf(false) }
     var savingMapFile by remember { mutableStateOf(false) }
 
-    fun writeMapFile(uri: Uri, json: String, saveAsProjectDestination: Boolean) {
+    fun writeMapFile(uri: Uri, content: String, format: MapFileFormat, saveAsProjectDestination: Boolean) {
         scope.launch {
             savingMapFile = true
             val result = runCatching {
                 withContext(Dispatchers.IO) {
                     context.contentResolver.openOutputStream(uri, "wt")
                         ?.bufferedWriter(Charsets.UTF_8)
-                        ?.use { it.write(json) }
+                        ?.use { it.write(content) }
                         ?: error("The selected file could not be opened for writing.")
                 }
             }
             savingMapFile = false
+            val destinationKey = "$projectId.${format.preferenceSuffix}"
             if (result.isSuccess) {
                 if (saveAsProjectDestination) {
                     runCatching {
@@ -122,14 +130,17 @@ fun GeologicalMapScreen(
                                 android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION
                         )
                     }
-                    mapFilePreferences.edit().putString(projectId.toString(), uri.toString()).apply()
-                    savedMapFileUri = uri.toString()
+                    mapFilePreferences.edit()
+                        .putString(destinationKey, uri.toString())
+                        .putString("$projectId.selectedFormat", format.name)
+                        .remove(projectId.toString())
+                        .apply()
+                    mapFileFormat = format
                 }
                 Toast.makeText(context, "Map saved to ${uri.lastPathSegment ?: "file"}", Toast.LENGTH_SHORT).show()
             } else {
                 if (!saveAsProjectDestination) {
-                    mapFilePreferences.edit().remove(projectId.toString()).apply()
-                    savedMapFileUri = null
+                    mapFilePreferences.edit().remove(destinationKey).apply()
                 }
                 Toast.makeText(
                     context,
@@ -139,18 +150,35 @@ fun GeologicalMapScreen(
             }
         }
     }
-    val saveMapFileLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/geo+json")) { uri ->
-        if (uri != null) writeMapFile(uri, GeologicalMapData.toGeoJson(features), saveAsProjectDestination = true)
+    fun mapFileContent(format: MapFileFormat) = when (format) {
+        MapFileFormat.GEOJSON -> GeologicalMapData.toGeoJson(features)
+        MapFileFormat.KML -> GeologicalMapData.toKml(features)
+    }
+    val geoJsonSaveLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument(MapFileFormat.GEOJSON.mimeType)) { uri ->
+        if (uri != null) writeMapFile(uri, mapFileContent(MapFileFormat.GEOJSON), MapFileFormat.GEOJSON, saveAsProjectDestination = true)
+    }
+    val kmlSaveLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument(MapFileFormat.KML.mimeType)) { uri ->
+        if (uri != null) writeMapFile(uri, mapFileContent(MapFileFormat.KML), MapFileFormat.KML, saveAsProjectDestination = true)
     }
 
     fun saveMapFile() {
-        val json = GeologicalMapData.toGeoJson(features)
-        onSaveLayer(json, visible)
-        val uri = savedMapFileUri?.let(Uri::parse)
+        val geoJson = GeologicalMapData.toGeoJson(features)
+        onSaveLayer(geoJson, visible)
+        val format = mapFileFormat
+        mapFilePreferences.edit().putString("$projectId.selectedFormat", format.name).apply()
+        val rememberedUri = mapFilePreferences.getString("$projectId.${format.preferenceSuffix}", null)
+            ?: if (format == MapFileFormat.GEOJSON) mapFilePreferences.getString(projectId.toString(), null) else null
+        if (rememberedUri != null && format == MapFileFormat.GEOJSON &&
+            mapFilePreferences.getString("$projectId.geojson", null) == null
+        ) {
+            mapFilePreferences.edit().putString("$projectId.geojson", rememberedUri).remove(projectId.toString()).apply()
+        }
+        val uri = rememberedUri?.let(Uri::parse)
         if (uri == null) {
-            saveMapFileLauncher.launch("project-$projectId-map.geojson")
+            val filename = "project-$projectId-map.${format.extension}"
+            if (format == MapFileFormat.KML) kmlSaveLauncher.launch(filename) else geoJsonSaveLauncher.launch(filename)
         } else {
-            writeMapFile(uri, json, saveAsProjectDestination = false)
+            writeMapFile(uri, mapFileContent(format), format, saveAsProjectDestination = false)
         }
     }
     val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/geo+json")) { uri ->
@@ -261,6 +289,27 @@ fun GeologicalMapScreen(
             item { IconButton(onClick = { if (undo.isNotEmpty()) { redo.add(GeologicalMapData.toGeoJson(features)); features = GeologicalMapData.fromGeoJson(undo.removeAt(undo.lastIndex)); save() } }, enabled = undo.isNotEmpty()) { Icon(Icons.Default.Undo, "Undo") } }
             item { IconButton(onClick = { if (redo.isNotEmpty()) { undo.add(GeologicalMapData.toGeoJson(features)); features = GeologicalMapData.fromGeoJson(redo.removeAt(redo.lastIndex)); save() } }, enabled = redo.isNotEmpty()) { Icon(Icons.Default.Redo, "Redo") } }
             item { IconButton(onClick = { visible = !visible; save() }) { Icon(if (visible) Icons.Default.Visibility else Icons.Default.VisibilityOff, "Toggle geological layer") } }
+            item {
+                Box {
+                    AssistChip(
+                        onClick = { saveFormatMenuExpanded = true },
+                        label = { Text(mapFileFormat.name) },
+                        leadingIcon = { Icon(Icons.Default.FolderOpen, null) }
+                    )
+                    DropdownMenu(expanded = saveFormatMenuExpanded, onDismissRequest = { saveFormatMenuExpanded = false }) {
+                        MapFileFormat.entries.forEach { format ->
+                            DropdownMenuItem(
+                                text = { Text(if (format == MapFileFormat.GEOJSON) "GeoJSON" else "KML") },
+                                onClick = {
+                                    mapFileFormat = format
+                                    mapFilePreferences.edit().putString("$projectId.selectedFormat", format.name).apply()
+                                    saveFormatMenuExpanded = false
+                                }
+                            )
+                        }
+                    }
+                }
+            }
             item {
                 TextButton(onClick = ::saveMapFile, enabled = !savingMapFile) {
                     Icon(Icons.Filled.Save, contentDescription = null, modifier = Modifier.size(18.dp))
